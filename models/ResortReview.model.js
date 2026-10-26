@@ -1,11 +1,32 @@
+
 const mongoose = require("mongoose");
+
+const ratingValidator = {
+  validator: function (value) {
+    return value === null || value === undefined ||
+      (Number.isFinite(value) && value >= 1 && value <= 5);
+  },
+  message: "Rating must be between 1 and 5.",
+};
+
+const imageSchema = new mongoose.Schema(
+  {
+    url: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    publicId: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+  },
+  { _id: false }
+);
 
 const resortReviewSchema = new mongoose.Schema(
   {
-    // ==========================================
-    // RESORT
-    // ==========================================
-
     resort: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Resort",
@@ -20,11 +41,6 @@ const resortReviewSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ==========================================
-    // BOOKING
-    // One booking = one review
-    // ==========================================
-
     booking: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ResortBooking",
@@ -33,26 +49,18 @@ const resortReviewSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ==========================================
-    // USER DETAILS
-    // फिलहाल guest snapshot store कर रहे हैं
-    // बाद में User model connect कर सकते हो
-    // ==========================================
-
     guest: {
       name: {
         type: String,
         required: true,
         trim: true,
       },
-
       email: {
         type: String,
         default: "",
         trim: true,
         lowercase: true,
       },
-
       phone: {
         type: String,
         default: "",
@@ -60,68 +68,22 @@ const resortReviewSchema = new mongoose.Schema(
       },
     },
 
-    // ==========================================
-    // OVERALL RATING
-    // ==========================================
-
     rating: {
       type: Number,
       required: true,
       min: 1,
       max: 5,
+      validate: ratingValidator,
     },
-
-    // ==========================================
-    // DETAILED RATINGS
-    // ==========================================
 
     ratings: {
-      cleanliness: {
-        type: Number,
-        min: 1,
-        max: 5,
-        default: null,
-      },
-
-      service: {
-        type: Number,
-        min: 1,
-        max: 5,
-        default: null,
-      },
-
-      location: {
-        type: Number,
-        min: 1,
-        max: 5,
-        default: null,
-      },
-
-      valueForMoney: {
-        type: Number,
-        min: 1,
-        max: 5,
-        default: null,
-      },
-
-      roomQuality: {
-        type: Number,
-        min: 1,
-        max: 5,
-        default: null,
-      },
-
-      food: {
-        type: Number,
-        min: 1,
-        max: 5,
-        default: null,
-      },
+      cleanliness: { type: Number, default: null, min: 1, max: 5, validate: ratingValidator },
+      service: { type: Number, default: null, min: 1, max: 5, validate: ratingValidator },
+      location: { type: Number, default: null, min: 1, max: 5, validate: ratingValidator },
+      valueForMoney: { type: Number, default: null, min: 1, max: 5, validate: ratingValidator },
+      roomQuality: { type: Number, default: null, min: 1, max: 5, validate: ratingValidator },
+      food: { type: Number, default: null, min: 1, max: 5, validate: ratingValidator },
     },
-
-    // ==========================================
-    // REVIEW CONTENT
-    // ==========================================
 
     title: {
       type: String,
@@ -138,36 +100,23 @@ const resortReviewSchema = new mongoose.Schema(
     },
 
     pros: {
-      type: [String],
+      type: [{ type: String, trim: true, maxlength: 300 }],
       default: [],
     },
 
     cons: {
-      type: [String],
+      type: [{ type: String, trim: true, maxlength: 300 }],
       default: [],
     },
 
-    // ==========================================
-    // IMAGES
-    // ==========================================
-
-    images: [
-      {
-        url: {
-          type: String,
-          required: true,
-        },
-
-        publicId: {
-          type: String,
-          default: "",
-        },
+    images: {
+      type: [imageSchema],
+      default: [],
+      validate: {
+        validator: (images) => images.length <= 10,
+        message: "A maximum of 10 review images is allowed.",
       },
-    ],
-
-    // ==========================================
-    // VENDOR RESPONSE
-    // ==========================================
+    },
 
     vendorReply: {
       message: {
@@ -176,25 +125,15 @@ const resortReviewSchema = new mongoose.Schema(
         trim: true,
         maxlength: 2000,
       },
-
       repliedAt: {
         type: Date,
         default: null,
       },
     },
 
-    // ==========================================
-    // STATUS
-    // ==========================================
-
     status: {
       type: String,
-      enum: [
-        "PENDING",
-        "APPROVED",
-        "REJECTED",
-        "HIDDEN",
-      ],
+      enum: ["PENDING", "APPROVED", "REJECTED", "HIDDEN"],
       default: "PENDING",
       index: true,
     },
@@ -202,6 +141,7 @@ const resortReviewSchema = new mongoose.Schema(
     rejectionReason: {
       type: String,
       default: "",
+      trim: true,
     },
 
     isVerifiedStay: {
@@ -212,32 +152,13 @@ const resortReviewSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true,
+      index: true,
     },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
+resortReviewSchema.index({ resort: 1, status: 1, createdAt: -1 });
+resortReviewSchema.index({ vendor: 1, status: 1, createdAt: -1 });
 
-// ==========================================
-// FAST REVIEW SEARCH
-// ==========================================
-
-resortReviewSchema.index({
-  resort: 1,
-  status: 1,
-  createdAt: -1,
-});
-
-resortReviewSchema.index({
-  vendor: 1,
-  status: 1,
-  createdAt: -1,
-});
-
-
-module.exports = mongoose.model(
-  "ResortReview",
-  resortReviewSchema
-);
+module.exports = mongoose.model("ResortReview", resortReviewSchema);

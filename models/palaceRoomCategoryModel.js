@@ -1,3 +1,6 @@
+
+
+
 const mongoose = require("mongoose");
 
 const imageSchema = new mongoose.Schema(
@@ -5,10 +8,12 @@ const imageSchema = new mongoose.Schema(
     url: {
       type: String,
       required: true,
+      trim: true,
     },
     publicId: {
       type: String,
       default: "",
+      trim: true,
     },
   },
   { _id: false }
@@ -16,9 +21,6 @@ const imageSchema = new mongoose.Schema(
 
 const palaceRoomCategorySchema = new mongoose.Schema(
   {
-    // ==========================================
-    // OWNER / PROPERTY
-    // ==========================================
     vendor: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Vendor",
@@ -33,18 +35,18 @@ const palaceRoomCategorySchema = new mongoose.Schema(
       index: true,
     },
 
-    // ==========================================
-    // ROOM BASIC DETAILS
-    // ==========================================
     name: {
       type: String,
-      required: true,
+      required: [true, "Room category name is required"],
       trim: true,
+      maxlength: 120,
     },
 
     description: {
       type: String,
       default: "",
+      trim: true,
+      maxlength: 3000,
     },
 
     roomType: {
@@ -74,12 +76,10 @@ const palaceRoomCategorySchema = new mongoose.Schema(
       default: "SQFT",
     },
 
-    // ==========================================
-    // BED CONFIGURATION
-    // ==========================================
     bedType: {
       type: String,
       default: "",
+      trim: true,
     },
 
     bedCount: {
@@ -88,9 +88,6 @@ const palaceRoomCategorySchema = new mongoose.Schema(
       min: 1,
     },
 
-    // ==========================================
-    // GUEST CAPACITY
-    // ==========================================
     includedAdults: {
       type: Number,
       default: 2,
@@ -126,31 +123,27 @@ const palaceRoomCategorySchema = new mongoose.Schema(
       default: false,
     },
 
-    // ==========================================
-    // ROOM INVENTORY
-    // Total physical rooms of this category
-    // ==========================================
     totalUnits: {
       type: Number,
       required: true,
-      min: 1,
       default: 1,
+      min: 1,
     },
 
-    // ==========================================
-    // AMENITIES
-    // ==========================================
-    amenities: [
-      {
-        type: String,
-        trim: true,
-      },
-    ],
+    amenities: {
+      type: [
+        {
+          type: String,
+          trim: true,
+        },
+      ],
+      default: [],
+    },
 
-    // ==========================================
-    // MEDIA
-    // ==========================================
-    images: [imageSchema],
+    images: {
+      type: [imageSchema],
+      default: [],
+    },
 
     coverImage: {
       url: {
@@ -163,12 +156,10 @@ const palaceRoomCategorySchema = new mongoose.Schema(
       },
     },
 
-    // ==========================================
-    // STATUS
-    // ==========================================
     isActive: {
       type: Boolean,
       default: true,
+      index: true,
     },
   },
   {
@@ -176,14 +167,11 @@ const palaceRoomCategorySchema = new mongoose.Schema(
   }
 );
 
-
-// One vendor + palace room category query fast
 palaceRoomCategorySchema.index({
   vendor: 1,
   palace: 1,
   createdAt: -1,
 });
-
 
 module.exports = mongoose.model(
   "PalaceRoomCategory",

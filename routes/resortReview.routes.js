@@ -1,8 +1,9 @@
-const express = require("express");
 
+const express = require("express");
 const router = express.Router();
 
 const protect = require("../middleware/auth.middleware");
+const userAuth = require("../middleware/userAuth.middleware");
 
 const {
   createReview,
@@ -12,39 +13,20 @@ const {
   getReviewSummary,
 } = require("../controllers/resortReview.controller");
 
-
 /* ==========================================
-   PUBLIC / USER SIDE
-   Later user authentication laga sakte hain
+   CUSTOMER SIDE
 ========================================== */
 
-router.post("/", createReview);
-
+// Customer JWT required
+router.post("/", userAuth, createReview);
 
 /* ==========================================
    VENDOR PANEL
 ========================================== */
 
-router.use(protect);
-
-
-// Review list
-router.get("/", getVendorReviews);
-
-
-// Resort review statistics
-router.get(
-  "/summary/:resortId",
-  getReviewSummary
-);
-
-
-// Single review
-router.get("/:id", getReviewById);
-
-
-// Vendor reply
-router.put("/:id/reply", replyToReview);
-
+router.get("/", protect, getVendorReviews);
+router.get("/summary/:resortId", protect, getReviewSummary);
+router.get("/:id", protect, getReviewById);
+router.put("/:id/reply", protect, replyToReview);
 
 module.exports = router;

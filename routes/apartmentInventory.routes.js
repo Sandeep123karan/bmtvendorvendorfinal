@@ -1,62 +1,19 @@
 const express = require("express");
+const protect = require("../middleware/auth.middleware");
+const {
+  getInventory,
+  bulkUpsert,
+  updateDay,
+  clearRange,
+} = require("../controllers/ApartmentInventory.controller");
 
 const router = express.Router();
 
-const protect = require(
-  "../middleware/auth.middleware"
-);
-
-const {
-  getApartmentInventory,
-  blockApartmentDates,
-  unblockApartmentDates,
-  getDateAvailability,
-} = require(
-  "../controllers/ApartmentInventory.controller"
-);
-
-
 router.use(protect);
 
-
-// ==========================================
-// INVENTORY CALENDAR
-// ==========================================
-
-router.get(
-  "/:apartmentId",
-  getApartmentInventory
-);
-
-
-// ==========================================
-// BLOCK DATES
-// ==========================================
-
-router.post(
-  "/:apartmentId/block",
-  blockApartmentDates
-);
-
-
-// ==========================================
-// UNBLOCK DATES
-// ==========================================
-
-router.post(
-  "/:apartmentId/unblock",
-  unblockApartmentDates
-);
-
-
-// ==========================================
-// SINGLE DATE
-// ==========================================
-
-router.get(
-  "/:apartmentId/date/:date",
-  getDateAvailability
-);
-
+router.get("/:apartmentId", getInventory);
+router.post("/:apartmentId/bulk", bulkUpsert);
+router.patch("/:apartmentId/:date", updateDay);
+router.delete("/:apartmentId", clearRange);
 
 module.exports = router;

@@ -7,7 +7,7 @@ const mongoose = require("mongoose");
 
 const hotelRoomSchema = new mongoose.Schema(
   {
-    /* ========================================================== 
+    /* ==========================================================
        REFERENCES
     ========================================================== */
 
@@ -25,16 +25,11 @@ const hotelRoomSchema = new mongoose.Schema(
       index: true,
     },
 
-
     /* ==========================================================
        BASIC ROOM INFORMATION
     ========================================================== */
 
-    roomName: {
-      type: String,
-      required: true,
-      trim: true,
-    },
+    roomName: { type: String, required: true, trim: true },
 
     roomType: {
       type: String,
@@ -57,37 +52,15 @@ const hotelRoomSchema = new mongoose.Schema(
       default: "standard",
     },
 
-    description: {
-      type: String,
-      default: "",
-      trim: true,
-    },
+    description: { type: String, default: "", trim: true },
 
-    shortDescription: {
-      type: String,
-      default: "",
-      trim: true,
-      maxlength: 500,
-    },
+    shortDescription: { type: String, default: "", trim: true, maxlength: 500 },
 
-    floorNumber: {
-      type: String,
-      default: "",
-    },
+    floorNumber: { type: String, default: "" },
 
-    roomSize: {
-      type: Number,
-      default: 0,
-    },
+    roomSize: { type: Number, default: 0 },
 
-    roomSizeUnit: {
-      type: String,
-      enum: [
-        "sqft",
-        "sqm",
-      ],
-      default: "sqft",
-    },
+    roomSizeUnit: { type: String, enum: ["sqft", "sqm"], default: "sqft" },
 
     viewType: {
       type: String,
@@ -105,69 +78,24 @@ const hotelRoomSchema = new mongoose.Schema(
       default: "no-view",
     },
 
-
     /* ==========================================================
        ROOM INVENTORY
     ========================================================== */
 
-    totalRooms: {
-      type: Number,
-      required: true,
-      min: 1,
-    },
-
-    availableRooms: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    bookedRooms: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    blockedRooms: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
+    totalRooms: { type: Number, required: true, min: 1 },
+    availableRooms: { type: Number, default: 0, min: 0 },
+    bookedRooms: { type: Number, default: 0, min: 0 },
+    blockedRooms: { type: Number, default: 0, min: 0 },
 
     /* ==========================================================
        GUEST OCCUPANCY
     ========================================================== */
 
-    maxGuests: {
-      type: Number,
-      required: true,
-      min: 1,
-    },
-
-    maxAdults: {
-      type: Number,
-      default: 2,
-      min: 1,
-    },
-
-    maxChildren: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    extraGuestAllowed: {
-      type: Boolean,
-      default: false,
-    },
-
-    extraGuestCharge: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
+    maxGuests: { type: Number, required: true, min: 1 },
+    maxAdults: { type: Number, default: 2, min: 1 },
+    maxChildren: { type: Number, default: 0, min: 0 },
+    extraGuestAllowed: { type: Boolean, default: false },
+    extraGuestCharge: { type: Number, default: 0, min: 0 },
 
     /* ==========================================================
        BED CONFIGURATION
@@ -190,164 +118,51 @@ const hotelRoomSchema = new mongoose.Schema(
       default: "double",
     },
 
-    bedCount: {
-      type: Number,
-      default: 1,
-      min: 1,
-    },
-
-    extraBedAvailable: {
-      type: Boolean,
-      default: false,
-    },
-
-    extraBedCharge: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
+    bedCount: { type: Number, default: 1, min: 1 },
+    extraBedAvailable: { type: Boolean, default: false },
+    extraBedCharge: { type: Number, default: 0, min: 0 },
 
     /* ==========================================================
        ROOM AMENITIES
     ========================================================== */
 
-    amenities: {
-      type: [String],
-      default: [],
-    },
+    amenities: { type: [String], default: [] },
 
-    wifi: {
-      type: Boolean,
-      default: false,
-    },
-
-    airConditioning: {
-      type: Boolean,
-      default: false,
-    },
-
-    heater: {
-      type: Boolean,
-      default: false,
-    },
-
-    television: {
-      type: Boolean,
-      default: false,
-    },
-
-    smartTv: {
-      type: Boolean,
-      default: false,
-    },
-
-    minibar: {
-      type: Boolean,
-      default: false,
-    },
-
-    refrigerator: {
-      type: Boolean,
-      default: false,
-    },
-
-    wardrobe: {
-      type: Boolean,
-      default: false,
-    },
-
-    workDesk: {
-      type: Boolean,
-      default: false,
-    },
-
-    sofa: {
-      type: Boolean,
-      default: false,
-    },
-
-    balcony: {
-      type: Boolean,
-      default: false,
-    },
-
-    terrace: {
-      type: Boolean,
-      default: false,
-    },
-
-    kitchen: {
-      type: Boolean,
-      default: false,
-    },
-
-    kitchenette: {
-      type: Boolean,
-      default: false,
-    },
-
-    washingMachine: {
-      type: Boolean,
-      default: false,
-    },
-
-    iron: {
-      type: Boolean,
-      default: false,
-    },
-
-    roomService: {
-      type: Boolean,
-      default: false,
-    },
-
+    wifi: { type: Boolean, default: false },
+    airConditioning: { type: Boolean, default: false },
+    heater: { type: Boolean, default: false },
+    television: { type: Boolean, default: false },
+    smartTv: { type: Boolean, default: false },
+    minibar: { type: Boolean, default: false },
+    refrigerator: { type: Boolean, default: false },
+    wardrobe: { type: Boolean, default: false },
+    workDesk: { type: Boolean, default: false },
+    sofa: { type: Boolean, default: false },
+    balcony: { type: Boolean, default: false },
+    terrace: { type: Boolean, default: false },
+    kitchen: { type: Boolean, default: false },
+    kitchenette: { type: Boolean, default: false },
+    washingMachine: { type: Boolean, default: false },
+    iron: { type: Boolean, default: false },
+    roomService: { type: Boolean, default: false },
 
     /* ==========================================================
        BATHROOM
     ========================================================== */
 
-    bathroomCount: {
-      type: Number,
-      default: 1,
-      min: 1,
-    },
+    bathroomCount: { type: Number, default: 1, min: 1 },
 
     bathroomType: {
       type: String,
-      enum: [
-        "private",
-        "shared",
-        "attached",
-      ],
+      enum: ["private", "shared", "attached"],
       default: "private",
     },
 
-    bathtub: {
-      type: Boolean,
-      default: false,
-    },
-
-    shower: {
-      type: Boolean,
-      default: true,
-    },
-
-    hotWater: {
-      type: Boolean,
-      default: true,
-    },
-
-    toiletries: {
-      type: Boolean,
-      default: false,
-    },
-
-    hairDryer: {
-      type: Boolean,
-      default: false,
-    },
-
+    bathtub: { type: Boolean, default: false },
+    shower: { type: Boolean, default: true },
+    hotWater: { type: Boolean, default: true },
+    toiletries: { type: Boolean, default: false },
+    hairDryer: { type: Boolean, default: false },
 
     /* ==========================================================
        MEAL PLAN
@@ -367,202 +182,64 @@ const hotelRoomSchema = new mongoose.Schema(
       default: "room-only",
     },
 
-    breakfastIncluded: {
-      type: Boolean,
-      default: false,
-    },
-
-    lunchIncluded: {
-      type: Boolean,
-      default: false,
-    },
-
-    dinnerIncluded: {
-      type: Boolean,
-      default: false,
-    },
-
-    mealPrice: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
+    breakfastIncluded: { type: Boolean, default: false },
+    lunchIncluded: { type: Boolean, default: false },
+    dinnerIncluded: { type: Boolean, default: false },
+    mealPrice: { type: Number, default: 0, min: 0 },
 
     /* ==========================================================
        PRICING
     ========================================================== */
 
-    basePrice: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
-
-    weekendPrice: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    holidayPrice: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    offerPrice: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    taxPercentage: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 100,
-    },
-
-    serviceChargePercentage: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 100,
-    },
+    basePrice: { type: Number, required: true, min: 0 },
+    weekendPrice: { type: Number, default: 0, min: 0 },
+    holidayPrice: { type: Number, default: 0, min: 0 },
+    offerPrice: { type: Number, default: 0, min: 0 },
+    taxPercentage: { type: Number, default: 0, min: 0, max: 100 },
+    serviceChargePercentage: { type: Number, default: 0, min: 0, max: 100 },
 
     pricingMode: {
       type: String,
-      enum: [
-        "PER_NIGHT",
-        "PER_ROOM",
-      ],
+      enum: ["PER_NIGHT", "PER_ROOM"],
       default: "PER_NIGHT",
     },
-
 
     /* ==========================================================
        CANCELLATION / BOOKING POLICY
     ========================================================== */
 
-    refundable: {
-      type: Boolean,
-      default: true,
-    },
-
-    freeCancellation: {
-      type: Boolean,
-      default: false,
-    },
-
-    cancellationDeadlineHours: {
-      type: Number,
-      default: 24,
-      min: 0,
-    },
-
-    cancellationPolicy: {
-      type: String,
-      default: "",
-    },
-
-    instantBooking: {
-      type: Boolean,
-      default: true,
-    },
-
-    bookingConfirmationRequired: {
-      type: Boolean,
-      default: false,
-    },
-
-    minimumStay: {
-      type: Number,
-      default: 1,
-      min: 1,
-    },
-
-    maximumStay: {
-      type: Number,
-      default: 30,
-      min: 1,
-    },
-
+    refundable: { type: Boolean, default: true },
+    freeCancellation: { type: Boolean, default: false },
+    cancellationDeadlineHours: { type: Number, default: 24, min: 0 },
+    cancellationPolicy: { type: String, default: "" },
+    instantBooking: { type: Boolean, default: true },
+    bookingConfirmationRequired: { type: Boolean, default: false },
+    minimumStay: { type: Number, default: 1, min: 1 },
+    maximumStay: { type: Number, default: 30, min: 1 },
 
     /* ==========================================================
        GUEST POLICIES
     ========================================================== */
 
-    coupleFriendly: {
-      type: Boolean,
-      default: true,
-    },
+    coupleFriendly: { type: Boolean, default: true },
+    unmarriedCouplesAllowed: { type: Boolean, default: true },
+    localIdAllowed: { type: Boolean, default: true },
+    childrenAllowed: { type: Boolean, default: true },
+    petsAllowed: { type: Boolean, default: false },
+    smokingAllowed: { type: Boolean, default: false },
+    alcoholAllowed: { type: Boolean, default: false },
+    partiesAllowed: { type: Boolean, default: false },
+    eventsAllowed: { type: Boolean, default: false },
 
-    unmarriedCouplesAllowed: {
-      type: Boolean,
-      default: true,
-    },
-
-    localIdAllowed: {
-      type: Boolean,
-      default: true,
-    },
-
-    childrenAllowed: {
-      type: Boolean,
-      default: true,
-    },
-
-    petsAllowed: {
-      type: Boolean,
-      default: false,
-    },
-
-    smokingAllowed: {
-      type: Boolean,
-      default: false,
-    },
-
-    alcoholAllowed: {
-      type: Boolean,
-      default: false,
-    },
-
-    partiesAllowed: {
-      type: Boolean,
-      default: false,
-    },
-
-    eventsAllowed: {
-      type: Boolean,
-      default: false,
-    },
-
-    houseRules: {
-      type: [String],
-      default: [],
-    },
-
+    houseRules: { type: [String], default: [] },
 
     /* ==========================================================
        MEDIA
     ========================================================== */
 
-    coverImage: {
-      type: String,
-      default: "",
-    },
-
-    images: {
-      type: [String],
-      default: [],
-    },
-
-    videos: {
-      type: [String],
-      default: [],
-    },
-
+    coverImage: { type: String, default: "" },
+    images: { type: [String], default: [] },
+    videos: { type: [String], default: [] },
 
     /* ==========================================================
        STATUS
@@ -570,108 +247,56 @@ const hotelRoomSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: [
-        "DRAFT",
-        "PENDING",
-        "APPROVED",
-        "REJECTED",
-        "ACTIVE",
-        "INACTIVE",
-      ],
+      enum: ["DRAFT", "PENDING", "APPROVED", "REJECTED", "ACTIVE", "INACTIVE"],
       default: "DRAFT",
       index: true,
     },
 
-    rejectionReason: {
-      type: String,
-      default: "",
-    },
-
-    isActive: {
-      type: Boolean,
-      default: true,
-    },
-
-    featured: {
-      type: Boolean,
-      default: false,
-    },
-
-    displayOrder: {
-      type: Number,
-      default: 0,
-    },
+    rejectionReason: { type: String, default: "" },
+    isActive: { type: Boolean, default: true },
+    featured: { type: Boolean, default: false },
+    displayOrder: { type: Number, default: 0 },
   },
   {
     timestamps: true,
   }
 );
 
-
 /* ============================================================
    INDEXES
+   (hotel / vendor / status par field-level index already hai,
+    isliye yahan sirf compound indexes rakhe hain)
 ============================================================ */
 
-hotelRoomSchema.index({
-  hotel: 1,
-  vendor: 1,
-});
-
-hotelRoomSchema.index({
-  hotel: 1,
-  status: 1,
-});
-
-hotelRoomSchema.index({
-  hotel: 1,
-  roomType: 1,
-});
-
-hotelRoomSchema.index({
-  vendor: 1,
-  isActive: 1,
-});
-
+hotelRoomSchema.index({ hotel: 1, vendor: 1 });
+hotelRoomSchema.index({ hotel: 1, status: 1 });
+hotelRoomSchema.index({ hotel: 1, roomType: 1 });
+hotelRoomSchema.index({ vendor: 1, isActive: 1 });
 
 /* ============================================================
    PRE SAVE
+   NOTE: Naye Mongoose (v8/v9) me sync hook ko `next` nahi milta.
+   Isliye function bina next ke likha hai - ye sab versions me chalta hai.
 ============================================================ */
 
-hotelRoomSchema.pre(
-  "save",
-  function (next) {
-
-    /*
-      Available rooms automatically calculate
-      when a new room is created.
-    */
-
-    if (
-      this.isNew &&
-      (
-        this.availableRooms === undefined ||
-        this.availableRooms === null
-      )
-    ) {
-      this.availableRooms =
-        Math.max(
-          this.totalRooms -
-          this.bookedRooms -
-          this.blockedRooms,
-          0
-        );
-    }
-
-   
+hotelRoomSchema.pre("save", function () {
+  // Naya room: available rooms auto calculate
+  if (this.isNew && !this.availableRooms) {
+    this.availableRooms = Math.max(
+      this.totalRooms - this.bookedRooms - this.blockedRooms,
+      0
+    );
   }
-);
 
+  // Available rooms kabhi total se zyada na ho
+  if (this.availableRooms > this.totalRooms) {
+    this.availableRooms = this.totalRooms;
+  }
+});
 
 /* ============================================================
    EXPORT
 ============================================================ */
 
-module.exports = mongoose.model(
-  "HotelRoom",
-  hotelRoomSchema
-);
+module.exports = mongoose.models.HotelRoom ||
+  mongoose.model("HotelRoom", hotelRoomSchema);

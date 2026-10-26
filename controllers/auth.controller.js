@@ -1,5 +1,4 @@
 
-
 // const Vendor = require("../models/Vendor.model");
 // const bcrypt = require("bcryptjs");
 // const jwt = require("jsonwebtoken");
@@ -738,6 +737,54 @@
 // };
 
 // /* ==========================================================
+//    DUPLICATE (409) HELPERS
+
+//    Pehle: koi bhi match => seedha 409 (even for the SAME
+//    person re-submitting onboarding).
+
+//    Ab:
+//    - approved / suspended account      => 409 "please login"
+//    - pending / rejected + same email
+//      + SAME password                   => application UPDATE (no 409)
+//    - password alag ya phone kisi aur ka => 409 with exact field
+// ========================================================== */
+
+// const labelFor = (emailTaken, phoneTaken) => {
+//   if (emailTaken && phoneTaken) return "email and phone number";
+//   if (emailTaken) return "email";
+//   return "phone number";
+// };
+
+// /* Mongo E11000 => readable field + code */
+// const describeDuplicateKey = (error) => {
+//   const source = error?.keyPattern || error?.keyValue || {};
+//   const field = Object.keys(source)[0] || "field";
+
+//   if (field === "email") {
+//     return {
+//       code: "EMAIL_ALREADY_EXISTS",
+//       field,
+//       message: "A vendor account already exists with this email. Please login.",
+//     };
+//   }
+
+//   if (field === "phone") {
+//     return {
+//       code: "PHONE_ALREADY_EXISTS",
+//       field,
+//       message:
+//         "A vendor account already exists with this phone number. Please login.",
+//     };
+//   }
+
+//   return {
+//     code: "DUPLICATE_VENDOR",
+//     field,
+//     message: `Duplicate value for "${field}". If you did not enter the same value anywhere else, ask the admin to run scripts/fixVendorIndexes.js (stale database index).`,
+//   };
+// };
+
+// /* ==========================================================
 //    SIGNUP
 // ========================================================== */
 
@@ -796,47 +843,92 @@
 //     }
 
 //     /* ======================================================
-//        DUPLICATE VENDOR CHECK
+//        DUPLICATE VENDOR CHECK (smart)
 //     ====================================================== */
 
-//     // const existingVendor = await Vendor.findOne({
-//     //   $or: [
-//     //     { email },
-//     //     { businessEmail: email },
-//     //     { phone },
-//     //     { businessPhone: phone },
-//     //   ],
-//     // });
+//     const matches = await Vendor.find({
+//       $or: [
+//         { email },
+//         { businessEmail: email },
+//         { phone },
+//         { businessPhone: phone },
+//       ],
+//     }).select("+password");
 
-//     // if (existingVendor) {
-//     //   return res.status(409).json({
-//     //     success: false,
-//     //     code: "VENDOR_ALREADY_EXISTS",
-//     //     status: existingVendor.status || "PENDING",
-//     //     isApproved: existingVendor.isApproved === true,
-//     //     message:
-//     //       "A vendor account already exists with this email or phone number.",
-//     //   });
-//     // }
-// const existingVendor = await Vendor.findOne({
-//   $or: [
-//     { email },
-//     { businessEmail: email },
-//     { phone },
-//     { businessPhone: phone },
-//   ],
-// });
+//     let existingApplication = null;
 
-// if (existingVendor) {
-//   return res.status(409).json({
-//     success: false,
-//     code: "VENDOR_ALREADY_EXISTS",
-//     status: existingVendor.status || "PENDING",
-//     isApproved: existingVendor.isApproved === true,
-//     message:
-//       "A vendor account already exists with this email or phone number.",
-//   });
-// }
+//     // Email ek vendor ka, phone doosre vendor ka
+//     if (matches.length > 1) {
+//       return res.status(409).json({
+//         success: false,
+//         code: "CONTACT_DETAILS_CONFLICT",
+//         message:
+//           "This email and phone number belong to different vendor accounts. Please use your own details or login.",
+//       });
+//     }
+
+//     if (matches.length === 1) {
+//       const existing = matches[0];
+
+//       const emailTaken =
+//         existing.email === email || existing.businessEmail === email;
+
+//       const phoneTaken =
+//         existing.phone === phone || existing.businessPhone === phone;
+
+//       const currentStatus = String(existing.status || "PENDING").toUpperCase();
+
+//       const label = labelFor(emailTaken, phoneTaken);
+
+//       // Approved / suspended account => login karna hoga
+//       if (
+//         currentStatus === "APPROVED" ||
+//         currentStatus === "SUSPENDED" ||
+//         existing.isApproved === true
+//       ) {
+//         return res.status(409).json({
+//           success: false,
+//           code: "VENDOR_ALREADY_EXISTS",
+//           conflictField: emailTaken ? "email" : "phone",
+//           status: existing.status || "PENDING",
+//           isApproved: existing.isApproved === true,
+//           message: `A vendor account already exists with this ${label}. Please login.`,
+//         });
+//       }
+
+//       // Sirf phone match hua (email alag) => kisi aur ka number hai
+//       if (!emailTaken) {
+//         return res.status(409).json({
+//           success: false,
+//           code: "PHONE_ALREADY_EXISTS",
+//           conflictField: "phone",
+//           status: existing.status || "PENDING",
+//           isApproved: false,
+//           message:
+//             "This phone number is already used in another vendor application.",
+//         });
+//       }
+
+//       // Pending / rejected application: same password => resubmit allowed
+//       const passwordOk = existing.password
+//         ? await bcrypt.compare(password, existing.password)
+//         : false;
+
+//       if (!passwordOk) {
+//         return res.status(409).json({
+//           success: false,
+//           code: "EMAIL_ALREADY_EXISTS",
+//           conflictField: "email",
+//           status: existing.status || "PENDING",
+//           isApproved: false,
+//           message:
+//             "An application with this email already exists. Use the same password you registered with to update it, or login.",
+//         });
+//       }
+
+//       existingApplication = existing;
+//     }
+
 //     /* ======================================================
 //        SELECTED VERTICAL
 //     ====================================================== */
@@ -1114,21 +1206,38 @@
 //     delete vendorData.confirmAccountNumber;
 
 //     /* ======================================================
-//        CREATE VENDOR
+//        CREATE  (or UPDATE the same pending application)
 //     ====================================================== */
 
-//     const vendor = await Vendor.create(vendorData);
+//     let vendor;
+//     let resubmitted = false;
+
+//     if (existingApplication) {
+//       existingApplication.set({
+//         ...vendorData,
+//         rejectionReason: "",
+//         onboardingRejectionReason: "",
+//         onboardingRejectedAt: null,
+//       });
+
+//       vendor = await existingApplication.save();
+//       resubmitted = true;
+//     } else {
+//       vendor = await Vendor.create(vendorData);
+//     }
 
 //     /* ======================================================
 //        IMPORTANT: NO TOKEN, NO AUTO LOGIN, NO DASHBOARD ACCESS.
 //        Admin approval required.
 //     ====================================================== */
 
-//     return res.status(201).json({
+//     return res.status(resubmitted ? 200 : 201).json({
 //       success: true,
-//       code: "APPLICATION_SUBMITTED",
-//       message:
-//         "Registration submitted successfully. Your BMT Connect vendor application is waiting for admin approval.",
+//       code: resubmitted ? "APPLICATION_UPDATED" : "APPLICATION_SUBMITTED",
+//       message: resubmitted
+//         ? "Your existing application was updated and is waiting for admin approval."
+//         : "Registration submitted successfully. Your BMT Connect vendor application is waiting for admin approval.",
+//       resubmitted,
 //       approvalRequired: true,
 //       status: "PENDING",
 //       isApproved: false,
@@ -1139,13 +1248,19 @@
 
 //     /* ---------- DUPLICATE MONGODB ERROR ---------- */
 //     if (error?.code === 11000) {
-//       const field =
-//         Object.keys(error.keyPattern || error.keyValue || {})[0] || "field";
+//       const info = describeDuplicateKey(error);
+
+//       console.error(
+//         "⚠️ Duplicate key:",
+//         JSON.stringify(error.keyPattern || {}),
+//         JSON.stringify(error.keyValue || {})
+//       );
 
 //       return res.status(409).json({
 //         success: false,
-//         code: "DUPLICATE_VENDOR",
-//         message: `${field} already exists`,
+//         code: info.code,
+//         conflictField: info.field,
+//         message: info.message,
 //       });
 //     }
 
@@ -2362,23 +2477,14 @@ const resolveDashboard = (vendor) => {
 };
 
 /* ==========================================================
-   DUPLICATE (409) HELPERS
+   DUPLICATE KEY (Mongo E11000) HELPER
 
-   Pehle: koi bhi match => seedha 409 (even for the SAME
-   person re-submitting onboarding).
-
-   Ab:
-   - approved / suspended account      => 409 "please login"
-   - pending / rejected + same email
-     + SAME password                   => application UPDATE (no 409)
-   - password alag ya phone kisi aur ka => 409 with exact field
+   Duplicate checking is now EMAIL-ONLY.
+   - Phone numbers are NOT unique (owner / staff may share).
+   - Approved / suspended email         => 409 "please login"
+   - Pending / rejected + same password => application UPDATED
+   - Pending / rejected + other password => 409 (email exists)
 ========================================================== */
-
-const labelFor = (emailTaken, phoneTaken) => {
-  if (emailTaken && phoneTaken) return "email and phone number";
-  if (emailTaken) return "email";
-  return "phone number";
-};
 
 /* Mongo E11000 => readable field + code */
 const describeDuplicateKey = (error) => {
@@ -2395,17 +2501,17 @@ const describeDuplicateKey = (error) => {
 
   if (field === "phone") {
     return {
-      code: "PHONE_ALREADY_EXISTS",
+      code: "PHONE_INDEX_STALE",
       field,
       message:
-        "A vendor account already exists with this phone number. Please login.",
+        "Database still has an old unique index on phone. Run: node scripts/fixVendorIndexes.js",
     };
   }
 
   return {
     code: "DUPLICATE_VENDOR",
     field,
-    message: `Duplicate value for "${field}". If you did not enter the same value anywhere else, ask the admin to run scripts/fixVendorIndexes.js (stale database index).`,
+    message: `Duplicate value for "${field}". Run: node scripts/fixVendorIndexes.js to remove the stale unique index.`,
   };
 };
 
@@ -2468,44 +2574,22 @@ exports.signup = async (req, res) => {
     }
 
     /* ======================================================
-       DUPLICATE VENDOR CHECK (smart)
+       DUPLICATE CHECK — EMAIL IS THE ONLY IDENTITY
+       Phone is NOT a conflict.
     ====================================================== */
 
     const matches = await Vendor.find({
-      $or: [
-        { email },
-        { businessEmail: email },
-        { phone },
-        { businessPhone: phone },
-      ],
+      $or: [{ email }, { businessEmail: email }],
     }).select("+password");
 
     let existingApplication = null;
 
-    // Email ek vendor ka, phone doosre vendor ka
-    if (matches.length > 1) {
-      return res.status(409).json({
-        success: false,
-        code: "CONTACT_DETAILS_CONFLICT",
-        message:
-          "This email and phone number belong to different vendor accounts. Please use your own details or login.",
-      });
-    }
-
-    if (matches.length === 1) {
-      const existing = matches[0];
-
-      const emailTaken =
-        existing.email === email || existing.businessEmail === email;
-
-      const phoneTaken =
-        existing.phone === phone || existing.businessPhone === phone;
+    if (matches.length > 0) {
+      const existing = matches.find((m) => m.email === email) || matches[0];
 
       const currentStatus = String(existing.status || "PENDING").toUpperCase();
 
-      const label = labelFor(emailTaken, phoneTaken);
-
-      // Approved / suspended account => login karna hoga
+      // Approved / suspended account => must login
       if (
         currentStatus === "APPROVED" ||
         currentStatus === "SUSPENDED" ||
@@ -2514,27 +2598,14 @@ exports.signup = async (req, res) => {
         return res.status(409).json({
           success: false,
           code: "VENDOR_ALREADY_EXISTS",
-          conflictField: emailTaken ? "email" : "phone",
           status: existing.status || "PENDING",
           isApproved: existing.isApproved === true,
-          message: `A vendor account already exists with this ${label}. Please login.`,
-        });
-      }
-
-      // Sirf phone match hua (email alag) => kisi aur ka number hai
-      if (!emailTaken) {
-        return res.status(409).json({
-          success: false,
-          code: "PHONE_ALREADY_EXISTS",
-          conflictField: "phone",
-          status: existing.status || "PENDING",
-          isApproved: false,
           message:
-            "This phone number is already used in another vendor application.",
+            "An approved vendor account already exists with this email. Please login.",
         });
       }
 
-      // Pending / rejected application: same password => resubmit allowed
+      // Pending / rejected: same password => update the application
       const passwordOk = existing.password
         ? await bcrypt.compare(password, existing.password)
         : false;
@@ -2543,11 +2614,10 @@ exports.signup = async (req, res) => {
         return res.status(409).json({
           success: false,
           code: "EMAIL_ALREADY_EXISTS",
-          conflictField: "email",
           status: existing.status || "PENDING",
           isApproved: false,
           message:
-            "An application with this email already exists. Use the same password you registered with to update it, or login.",
+            "An application with this email already exists. Use the same password you registered with, or login.",
         });
       }
 
@@ -2798,6 +2868,7 @@ exports.signup = async (req, res) => {
       "businessLogo",
       "documents",
       "media",
+      "documentFiles",
       "contractAccepted",
       "termsAccepted",
       "privacyAccepted",
@@ -2838,6 +2909,18 @@ exports.signup = async (req, res) => {
     let resubmitted = false;
 
     if (existingApplication) {
+      // If the applicant switched vertical (e.g. Bus -> Stay),
+      // clear the details of the other verticals.
+      Object.values(DETAILS_KEY).forEach((key) => {
+        if (!verticalDetails[key]) {
+          existingApplication.set(key, undefined);
+        }
+      });
+
+      if (selectedVertical !== "stay") {
+        existingApplication.set("staySubtype", "");
+      }
+
       existingApplication.set({
         ...vendorData,
         rejectionReason: "",

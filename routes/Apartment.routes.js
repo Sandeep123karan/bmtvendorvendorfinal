@@ -1,7 +1,7 @@
 const express = require("express");
 
 const protect = require("../middleware/auth.middleware");
-const upload = require("../utils/upload");
+const upload = require("../middleware/upload");
 
 const {
   createApartment,

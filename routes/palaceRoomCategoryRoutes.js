@@ -1,3 +1,6 @@
+
+
+
 const express = require("express");
 const router = express.Router();
 
@@ -13,52 +16,24 @@ const {
   toggleRoomCategory,
 } = require("../controllers/palaceRoomCategoryController");
 
-
 router.use(protect);
 
+// Create room category
+router.post("/", upload.any(), createRoomCategory);
 
-// CREATE
-router.post(
-  "/",
-  upload.any(),
-  createRoomCategory
-);
+// Get all room categories for a palace
+router.get("/palace/:palaceId", getRoomCategoriesByPalace);
 
+// Get one room category
+router.get("/:id", getRoomCategoryById);
 
-// GET ALL ROOMS OF A PALACE
-router.get(
-  "/palace/:palaceId",
-  getRoomCategoriesByPalace
-);
+// Update room category
+router.put("/:id", upload.any(), updateRoomCategory);
 
+// Activate / deactivate
+router.patch("/:id/toggle", toggleRoomCategory);
 
-// GET SINGLE
-router.get(
-  "/:id",
-  getRoomCategoryById
-);
-
-
-// UPDATE
-router.put(
-  "/:id",
-  upload.any(),
-  updateRoomCategory
-);
-
-
-// TOGGLE
-router.patch(
-  "/:id/toggle",
-  toggleRoomCategory
-);
-
-
-// DELETE
-router.delete(
-  "/:id",
-  deleteRoomCategory
-);
-
+// Delete room category
+router.delete("/:id", deleteRoomCategory);
 
 module.exports = router;

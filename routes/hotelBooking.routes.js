@@ -1,12 +1,18 @@
-// routes/hotelBooking.routes.js
-
 const express = require("express");
-
 const router = express.Router();
 
-const protect = require("../middleware/auth.middleware");
+const protect = require("../middleware/auth.middleware");      // vendor
+const userAuth = require("../middleware/userAuth.middleware"); // customer  (file ka naam apne project se match karo)
 
 const {
+  publicListHotels,
+  publicGetHotel,
+  publicQuote,
+  customerCreateBooking,
+  customerMyBookings,
+  customerGetBooking,
+  customerCancelBooking,
+  quoteBooking,
   createBooking,
   getVendorBookings,
   getSingleBooking,
@@ -14,109 +20,32 @@ const {
   cancelBooking,
   checkIn,
   checkOut,
+  markPaid,
 } = require("../controllers/hotelBooking.controller");
 
+/* ================= PUBLIC ================= */
+router.get("/public/hotels", publicListHotels);
+router.get("/public/hotels/:hotelId", publicGetHotel);
+router.post("/public/quote", publicQuote);
 
-/* ============================================================
-   AUTHENTICATION
-============================================================ */
+/* ================= CUSTOMER ================= */
+router.post("/customer", userAuth, customerCreateBooking);
+router.get("/customer/my", userAuth, customerMyBookings);
+router.get("/customer/:bookingId", userAuth, customerGetBooking);
+router.put("/customer/:bookingId/cancel", userAuth, customerCancelBooking);
 
-router.use(protect);
+/* ================= VENDOR ================= */
+router.post("/quote", protect, quoteBooking);
+router.post("/", protect, createBooking);
 
+router.get("/", protect, getVendorBookings);
+router.get("/vendor", protect, getVendorBookings);
+router.get("/:bookingId", protect, getSingleBooking);
 
-/* ============================================================
-   CREATE HOTEL BOOKING
-
-   POST /api/hotel-booking
-============================================================ */
-
-router.post(
-  "/",
-  createBooking
-);
-
-
-/* ============================================================
-   GET ALL VENDOR BOOKINGS
-
-   GET /api/hotel-booking
-
-   Optional Query:
-   ?status=CONFIRMED
-   ?paymentStatus=PAID
-   ?hotelId=HOTEL_ID
-   ?page=1
-   ?limit=20
-============================================================ */
-
-router.get(
-  "/",
-  getVendorBookings
-);
-
-
-/* ============================================================
-   GET SINGLE BOOKING
-
-   GET /api/hotel-booking/:bookingId
-============================================================ */
-
-router.get(
-  "/:bookingId",
-  getSingleBooking
-);
-
-
-/* ============================================================
-   CONFIRM BOOKING
-
-   PUT /api/hotel-booking/:bookingId/confirm
-============================================================ */
-
-router.put(
-  "/:bookingId/confirm",
-  confirmBooking
-);
-
-
-/* ============================================================
-   CANCEL BOOKING
-
-   PUT /api/hotel-booking/:bookingId/cancel
-============================================================ */
-
-router.put(
-  "/:bookingId/cancel",
-  cancelBooking
-);
-
-
-/* ============================================================
-   CHECK-IN GUEST
-
-   PUT /api/hotel-booking/:bookingId/check-in
-============================================================ */
-
-router.put(
-  "/:bookingId/check-in",
-  checkIn
-);
-
-
-/* ============================================================
-   CHECK-OUT GUEST
-
-   PUT /api/hotel-booking/:bookingId/check-out
-============================================================ */
-
-router.put(
-  "/:bookingId/check-out",
-  checkOut
-);
-
-
-/* ============================================================
-   EXPORT
-============================================================ */
+router.put("/:bookingId/confirm", protect, confirmBooking);
+router.put("/:bookingId/cancel", protect, cancelBooking);
+router.put("/:bookingId/check-in", protect, checkIn);
+router.put("/:bookingId/check-out", protect, checkOut);
+router.put("/:bookingId/payment", protect, markPaid);
 
 module.exports = router;

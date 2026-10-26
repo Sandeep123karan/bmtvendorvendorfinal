@@ -560,36 +560,41 @@ const apartmentSchema = new mongoose.Schema(
     // APPROVAL / LISTING STATUS
     // =====================================================
 
+    // status: {
+    //   type: String,
+    //   enum: [
+    //     "draft",
+    //     "pending",
+    //     "approved",
+    //     "rejected",
+    //     "inactive",
+    //   ],
+    //   default: "pending",
+    //   index: true,
+    // },
+
+    // rejectionReason: {
+    //   type: String,
+    //   default: "",
+    // },
+
+    // approvedBy: {
+    //   type: mongoose.Schema.Types.ObjectId,
+    //   ref: "Admin",
+    //   default: null,
+    // },
+
+    // approvedAt: {
+    //   type: Date,
+    //   default: null,
+    // },
+
     status: {
       type: String,
-      enum: [
-        "draft",
-        "pending",
-        "approved",
-        "rejected",
-        "inactive",
-      ],
-      default: "pending",
+      enum: ["active", "inactive"],
+      default: "active",
       index: true,
     },
-
-    rejectionReason: {
-      type: String,
-      default: "",
-    },
-
-    approvedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Admin",
-      default: null,
-    },
-
-    approvedAt: {
-      type: Date,
-      default: null,
-    },
-
-
     // =====================================================
     // META
     // =====================================================

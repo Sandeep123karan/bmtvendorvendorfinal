@@ -1,44 +1,346 @@
+
+
+const mongoose = require("mongoose");
+
 const Palace = require("../models/palaceModel");
 const PalaceRoomCategory = require("../models/palaceRoomCategoryModel");
 
+const {
+  uploadToCloudinary,
+  deleteFromCloudinary,
+} = require("../utils/uploadToCloudinary");
+
+// --------------------------------------------------
+// HELPERS
+// --------------------------------------------------
+
+const isValidId = (id) => mongoose.isValidObjectId(id);
+
+const getVendorId = (req) => req.vendor?._id;
 
 const parseJSON = (value, fallback) => {
-  try {
-    if (!value) return fallback;
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
 
-    return typeof value === "string"
-      ? JSON.parse(value)
-      : value;
-  } catch (error) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
     return fallback;
   }
 };
 
+const parseAmenities = (value, fallback = []) => {
+  const parsed = parseJSON(value, fallback);
 
-const toBoolean = (value, fallback = false) => {
-  if (typeof value === "boolean") return value;
+  if (Array.isArray(parsed)) {
+    return [
+      ...new Set(
+        parsed
+          .filter((item) => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean)
+      ),
+    ];
+  }
 
-  if (typeof value === "string") {
-    return value.toLowerCase() === "true";
+  if (typeof parsed === "string") {
+    return [
+      ...new Set(
+        parsed.split(",").map((item) => item.trim()).filter(Boolean)
+      ),
+    ];
   }
 
   return fallback;
 };
 
+const parseBoolean = (value, fallback = false) => {
+  if (typeof value === "boolean") return value;
 
-/* ==========================================
-   CREATE ROOM CATEGORY
-========================================== */
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+  }
+
+  if (value === 1 || value === 1) return true;
+  if (value === 0) return false;
+
+  return fallback;
+};
+
+const parseNumber = (value, field, fallback) => {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
+    throw new Error(`${field} must be a valid number`);
+  }
+
+  return number;
+};
+
+const getFiles = (req) => {
+  if (Array.isArray(req.files)) return req.files;
+  if (req.file) return [req.file];
+  return [];
+};
+
+const uploadRoomImages = async (files) => {
+  const uploaded = [];
+
+  try {
+    for (const file of files) {
+      if (!file.mimetype?.startsWith("image/")) {
+        throw new Error("Only image files are allowed");
+      }
+
+      if (!file.buffer) {
+        throw new Error(
+          "Image buffer missing. Check Multer memoryStorage configuration."
+        );
+      }
+
+      // Existing helper accepts (buffer, folder)
+      // and should return { url, publicId }.
+      const result = await uploadToCloudinary(
+        file.buffer,
+        "bmt/palace-room-categories"
+      );
+
+      const url = result?.url;
+      const publicId = result?.publicId || result?.public_id || "";
+
+      if (!url) {
+        throw new Error("Cloudinary did not return an image URL");
+      }
+
+      uploaded.push({ url, publicId });
+    }
+
+    return uploaded;
+  } catch (error) {
+    await cleanupImages(uploaded);
+    throw error;
+  }
+};
+
+const cleanupImages = async (images = []) => {
+  const publicIds = [
+    ...new Set(
+      images
+        .map((image) => image?.publicId || image?.public_id)
+        .filter(Boolean)
+    ),
+  ];
+
+  return Promise.allSettled(
+    publicIds.map((publicId) => deleteFromCloudinary(publicId))
+  );
+};
+
+const sendError = (res, error, label) => {
+  console.error(`${label}:`, error);
+
+  if (
+    error.name === "ValidationError" ||
+    error.name === "CastError" ||
+    error.message?.includes("must be a valid number") ||
+    error.message === "Only image files are allowed" ||
+    error.message?.includes("Image buffer missing") ||
+    error.message?.includes("Cloudinary did not return")
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    message: "Internal server error",
+  });
+};
+
+const validateCapacity = (data) => {
+  if (data.includedAdults > data.maxAdults) {
+    return "Included adults cannot exceed maximum adults";
+  }
+
+  if (data.maxGuests < data.includedAdults) {
+    return "Maximum guests cannot be less than included adults";
+  }
+
+  if (
+    data.maxGuests <
+    data.maxAdults + data.maxChildren
+  ) {
+    return "Maximum guests cannot be less than max adults plus max children";
+  }
+
+  return null;
+};
+
+const buildRoomData = (body, existing = {}) => {
+  const b = body;
+
+  const data = {
+    name:
+      b.name !== undefined
+        ? String(b.name).trim()
+        : existing.name,
+
+    description:
+      b.description !== undefined
+        ? String(b.description).trim()
+        : existing.description || "",
+
+    roomType: b.roomType ?? existing.roomType ?? "DELUXE",
+
+    roomSize: parseNumber(
+      b.roomSize,
+      "roomSize",
+      existing.roomSize ?? 0
+    ),
+
+    roomSizeUnit:
+      b.roomSizeUnit ?? existing.roomSizeUnit ?? "SQFT",
+
+    bedType:
+      b.bedType !== undefined
+        ? String(b.bedType).trim()
+        : existing.bedType || "",
+
+    bedCount: parseNumber(
+      b.bedCount,
+      "bedCount",
+      existing.bedCount ?? 1
+    ),
+
+    includedAdults: parseNumber(
+      b.includedAdults,
+      "includedAdults",
+      existing.includedAdults ?? 2
+    ),
+
+    maxAdults: parseNumber(
+      b.maxAdults,
+      "maxAdults",
+      existing.maxAdults ?? 2
+    ),
+
+    maxChildren: parseNumber(
+      b.maxChildren,
+      "maxChildren",
+      existing.maxChildren ?? 0
+    ),
+
+    maxGuests: parseNumber(
+      b.maxGuests,
+      "maxGuests",
+      existing.maxGuests ??
+        (
+          parseNumber(b.maxAdults, "maxAdults", 2) +
+          parseNumber(b.maxChildren, "maxChildren", 0)
+        )
+    ),
+
+    maxExtraMattress: parseNumber(
+      b.maxExtraMattress,
+      "maxExtraMattress",
+      existing.maxExtraMattress ?? 0
+    ),
+
+    extraMattressAllowed: parseBoolean(
+      b.extraMattressAllowed,
+      existing.extraMattressAllowed ?? false
+    ),
+
+    totalUnits: parseNumber(
+      b.totalUnits,
+      "totalUnits",
+      existing.totalUnits ?? 1
+    ),
+
+    amenities:
+      b.amenities !== undefined
+        ? parseAmenities(b.amenities)
+        : existing.amenities || [],
+  };
+
+  if (!data.name) {
+    throw new Error("Room category name is required");
+  }
+
+  if (!Number.isInteger(data.bedCount) || data.bedCount < 1) {
+    throw new Error("bedCount must be an integer greater than 0");
+  }
+
+  if (!Number.isInteger(data.totalUnits) || data.totalUnits < 1) {
+    throw new Error("totalUnits must be an integer greater than 0");
+  }
+
+  const integerFields = [
+    "includedAdults",
+    "maxAdults",
+    "maxChildren",
+    "maxGuests",
+    "maxExtraMattress",
+  ];
+
+  for (const field of integerFields) {
+    if (!Number.isInteger(data[field])) {
+      throw new Error(`${field} must be an integer`);
+    }
+  }
+
+  const capacityError = validateCapacity(data);
+
+  if (capacityError) {
+    throw new Error(capacityError);
+  }
+
+  return data;
+};
+
+// --------------------------------------------------
+// CREATE
+// POST /api/palace-room-categories
+// FormData: palaceId, name, other fields, images
+// --------------------------------------------------
 
 exports.createRoomCategory = async (req, res) => {
-  try {
-    const b = req.body;
+  let uploadedImages = [];
 
-    // Vendor owns this palace?
+  try {
+    const vendorId = getVendorId(req);
+    const { palaceId } = req.body;
+
+    if (!vendorId) {
+      return res.status(401).json({
+        success: false,
+        message: "Vendor authentication required",
+      });
+    }
+
+    if (!isValidId(palaceId)) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid palaceId is required",
+      });
+    }
+
     const palace = await Palace.findOne({
-      _id: b.palaceId,
-      vendor: req.vendor._id,
-    });
+      _id: palaceId,
+      vendor: vendorId,
+    }).select("_id");
 
     if (!palace) {
       return res.status(404).json({
@@ -47,65 +349,16 @@ exports.createRoomCategory = async (req, res) => {
       });
     }
 
-    const includedAdults = Number(b.includedAdults || 2);
-    const maxAdults = Number(b.maxAdults || 2);
-    const maxChildren = Number(b.maxChildren || 0);
-    const maxGuests = Number(
-      b.maxGuests || maxAdults + maxChildren
-    );
+    const roomData = buildRoomData(req.body);
 
-    if (includedAdults > maxAdults) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Included adults cannot be greater than maximum adults",
-      });
-    }
-
-    const images = [];
-
-    if (req.files && req.files.length > 0) {
-      req.files.forEach((file) => {
-        images.push({
-          url: file.path || file.url || "",
-          publicId: file.filename || file.public_id || "",
-        });
-      });
-    }
+    uploadedImages = await uploadRoomImages(getFiles(req));
 
     const roomCategory = await PalaceRoomCategory.create({
-      vendor: req.vendor._id,
+      ...roomData,
+      vendor: vendorId,
       palace: palace._id,
-
-      name: b.name,
-      description: b.description || "",
-      roomType: b.roomType || "DELUXE",
-
-      roomSize: Number(b.roomSize || 0),
-      roomSizeUnit: b.roomSizeUnit || "SQFT",
-
-      bedType: b.bedType || "",
-      bedCount: Number(b.bedCount || 1),
-
-      includedAdults,
-      maxAdults,
-      maxChildren,
-      maxGuests,
-
-      maxExtraMattress: Number(
-        b.maxExtraMattress || 0
-      ),
-
-      extraMattressAllowed: toBoolean(
-        b.extraMattressAllowed
-      ),
-
-      totalUnits: Number(b.totalUnits || 1),
-
-      amenities: parseJSON(b.amenities, []),
-
-      images,
-      coverImage: images[0] || {
+      images: uploadedImages,
+      coverImage: uploadedImages[0] || {
         url: "",
         publicId: "",
       },
@@ -116,28 +369,40 @@ exports.createRoomCategory = async (req, res) => {
       message: "Room category created successfully",
       data: roomCategory,
     });
-
   } catch (error) {
-    console.error("CREATE ROOM CATEGORY ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    await cleanupImages(uploadedImages);
+    return sendError(res, error, "CREATE ROOM CATEGORY ERROR");
   }
 };
 
-
-/* ==========================================
-   GET ROOM CATEGORIES OF ONE PALACE
-========================================== */
+// --------------------------------------------------
+// GET ALL FOR A PALACE
+// GET /api/palace-room-categories/palace/:palaceId
+// --------------------------------------------------
 
 exports.getRoomCategoriesByPalace = async (req, res) => {
   try {
+    const vendorId = getVendorId(req);
+    const { palaceId } = req.params;
+
+    if (!vendorId) {
+      return res.status(401).json({
+        success: false,
+        message: "Vendor authentication required",
+      });
+    }
+
+    if (!isValidId(palaceId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid palace ID",
+      });
+    }
+
     const palace = await Palace.findOne({
-      _id: req.params.palaceId,
-      vendor: req.vendor._id,
-    });
+      _id: palaceId,
+      vendor: vendorId,
+    }).select("_id propertyName");
 
     if (!palace) {
       return res.status(404).json({
@@ -148,36 +413,48 @@ exports.getRoomCategoriesByPalace = async (req, res) => {
 
     const rooms = await PalaceRoomCategory.find({
       palace: palace._id,
-      vendor: req.vendor._id,
-    }).sort({
-      createdAt: -1,
-    });
+      vendor: vendorId,
+    }).sort({ createdAt: -1 });
 
     return res.status(200).json({
       success: true,
       count: rooms.length,
+      palace,
       data: rooms,
     });
-
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error, "GET ROOM CATEGORIES ERROR");
   }
 };
 
-
-/* ==========================================
-   GET SINGLE ROOM CATEGORY
-========================================== */
+// --------------------------------------------------
+// GET SINGLE
+// GET /api/palace-room-categories/:id
+// --------------------------------------------------
 
 exports.getRoomCategoryById = async (req, res) => {
   try {
+    const vendorId = getVendorId(req);
+    const { id } = req.params;
+
+    if (!vendorId) {
+      return res.status(401).json({
+        success: false,
+        message: "Vendor authentication required",
+      });
+    }
+
+    if (!isValidId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid room category ID",
+      });
+    }
+
     const room = await PalaceRoomCategory.findOne({
-      _id: req.params.id,
-      vendor: req.vendor._id,
-    });
+      _id: id,
+      vendor: vendorId,
+    }).populate("palace", "propertyName");
 
     if (!room) {
       return res.status(404).json({
@@ -190,27 +467,41 @@ exports.getRoomCategoryById = async (req, res) => {
       success: true,
       data: room,
     });
-
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error, "GET ROOM CATEGORY ERROR");
   }
 };
 
-
-/* ==========================================
-   UPDATE ROOM CATEGORY
-========================================== */
+// --------------------------------------------------
+// UPDATE
+// PUT /api/palace-room-categories/:id
+// New uploaded images are appended to existing images.
+// --------------------------------------------------
 
 exports.updateRoomCategory = async (req, res) => {
+  let uploadedImages = [];
+
   try {
-    const b = req.body;
+    const vendorId = getVendorId(req);
+    const { id } = req.params;
+
+    if (!vendorId) {
+      return res.status(401).json({
+        success: false,
+        message: "Vendor authentication required",
+      });
+    }
+
+    if (!isValidId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid room category ID",
+      });
+    }
 
     const room = await PalaceRoomCategory.findOne({
-      _id: req.params.id,
-      vendor: req.vendor._id,
+      _id: id,
+      vendor: vendorId,
     });
 
     if (!room) {
@@ -220,76 +511,23 @@ exports.updateRoomCategory = async (req, res) => {
       });
     }
 
-    // Basic fields
-    const fields = [
-      "name",
-      "description",
-      "roomType",
-      "roomSizeUnit",
-      "bedType",
-    ];
+    const roomData = buildRoomData(req.body, room.toObject());
 
-    fields.forEach((field) => {
-      if (b[field] !== undefined) {
-        room[field] = b[field];
-      }
-    });
+    uploadedImages = await uploadRoomImages(getFiles(req));
 
-    // Number fields
-    const numberFields = [
-      "roomSize",
-      "bedCount",
-      "includedAdults",
-      "maxAdults",
-      "maxChildren",
-      "maxGuests",
-      "maxExtraMattress",
-      "totalUnits",
-    ];
+    room.set(roomData);
 
-    numberFields.forEach((field) => {
-      if (b[field] !== undefined) {
-        room[field] = Number(b[field]);
-      }
-    });
-
-    if (
-      room.includedAdults > room.maxAdults
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Included adults cannot be greater than maximum adults",
-      });
-    }
-
-    if (b.extraMattressAllowed !== undefined) {
-      room.extraMattressAllowed = toBoolean(
-        b.extraMattressAllowed
-      );
-    }
-
-    if (b.amenities !== undefined) {
-      room.amenities = parseJSON(
-        b.amenities,
-        room.amenities
-      );
-    }
-
-    // New images
-    if (req.files && req.files.length > 0) {
-      const newImages = req.files.map((file) => ({
-        url: file.path || file.url || "",
-        publicId: file.filename || file.public_id || "",
-      }));
-
+    if (uploadedImages.length > 0) {
       room.images = [
-        ...(room.images || []),
-        ...newImages,
+        ...(room.images || []).map((image) => ({
+          url: image.url,
+          publicId: image.publicId || "",
+        })),
+        ...uploadedImages,
       ];
 
       if (!room.coverImage?.url) {
-        room.coverImage = newImages[0];
+        room.coverImage = uploadedImages[0];
       }
     }
 
@@ -300,27 +538,40 @@ exports.updateRoomCategory = async (req, res) => {
       message: "Room category updated successfully",
       data: room,
     });
-
   } catch (error) {
-    console.error("UPDATE ROOM CATEGORY ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    await cleanupImages(uploadedImages);
+    return sendError(res, error, "UPDATE ROOM CATEGORY ERROR");
   }
 };
 
-
-/* ==========================================
-   DELETE ROOM CATEGORY
-========================================== */
+// --------------------------------------------------
+// DELETE
+// DELETE /api/palace-room-categories/:id
+// --------------------------------------------------
 
 exports.deleteRoomCategory = async (req, res) => {
   try {
+    const vendorId = getVendorId(req);
+    const { id } = req.params;
+
+    if (!vendorId) {
+      return res.status(401).json({
+        success: false,
+        message: "Vendor authentication required",
+      });
+    }
+
+    if (!isValidId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid room category ID",
+      });
+    }
+
+    // Delete only a category owned by the authenticated vendor.
     const room = await PalaceRoomCategory.findOneAndDelete({
-      _id: req.params.id,
-      vendor: req.vendor._id,
+      _id: id,
+      vendor: vendorId,
     });
 
     if (!room) {
@@ -330,29 +581,55 @@ exports.deleteRoomCategory = async (req, res) => {
       });
     }
 
+    const images = [
+      ...(room.images || []),
+      room.coverImage,
+    ];
+
+    const cleanupResults = await cleanupImages(images);
+
+    const cleanupFailed = cleanupResults.some(
+      (result) => result.status === "rejected"
+    );
+
     return res.status(200).json({
       success: true,
-      message: "Room category deleted successfully",
+      message: cleanupFailed
+        ? "Room category deleted, but some Cloudinary images may need cleanup"
+        : "Room category and its images deleted successfully",
     });
-
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error, "DELETE ROOM CATEGORY ERROR");
   }
 };
 
-
-/* ==========================================
-   TOGGLE ROOM ACTIVE / INACTIVE
-========================================== */
+// --------------------------------------------------
+// TOGGLE ACTIVE / INACTIVE
+// PATCH /api/palace-room-categories/:id/toggle
+// --------------------------------------------------
 
 exports.toggleRoomCategory = async (req, res) => {
   try {
+    const vendorId = getVendorId(req);
+    const { id } = req.params;
+
+    if (!vendorId) {
+      return res.status(401).json({
+        success: false,
+        message: "Vendor authentication required",
+      });
+    }
+
+    if (!isValidId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid room category ID",
+      });
+    }
+
     const room = await PalaceRoomCategory.findOne({
-      _id: req.params.id,
-      vendor: req.vendor._id,
+      _id: id,
+      vendor: vendorId,
     });
 
     if (!room) {
@@ -363,7 +640,6 @@ exports.toggleRoomCategory = async (req, res) => {
     }
 
     room.isActive = !room.isActive;
-
     await room.save();
 
     return res.status(200).json({
@@ -373,11 +649,7 @@ exports.toggleRoomCategory = async (req, res) => {
       } successfully`,
       data: room,
     });
-
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error, "TOGGLE ROOM CATEGORY ERROR");
   }
 };

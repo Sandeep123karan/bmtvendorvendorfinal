@@ -5,7 +5,7 @@ const vacationHouseController = require("../controllers/vacationHouseController"
 const upload = require("../middleware/upload");
 const protectVendor = require("../middleware/auth.middleware");
 
-/* ================= ADD VACATION HOUSE ================= */
+/* ================= ADD ================= */
 router.post(
   "/add",
   protectVendor,
@@ -13,21 +13,14 @@ router.post(
   vacationHouseController.addVacationHouse
 );
 
-/* ================= GET ALL VENDOR HOUSES ================= */
+/* ================= LIST (vendor ke apne houses) ================= */
 router.get(
   "/my-houses",
   protectVendor,
   vacationHouseController.getVendorVacationHouses
 );
 
-/* ================= GET SINGLE HOUSE ================= */
-router.get(
-  "/:id",
-  protectVendor,
-  vacationHouseController.getSingleVacationHouse
-);
-
-/* ================= UPDATE HOUSE ================= */
+/* ================= UPDATE ================= */
 router.put(
   "/update/:id",
   protectVendor,
@@ -35,11 +28,18 @@ router.put(
   vacationHouseController.updateVacationHouse
 );
 
-/* ================= DELETE HOUSE ================= */
+/* ================= DELETE ================= */
 router.delete(
   "/delete/:id",
   protectVendor,
   vacationHouseController.deleteVacationHouse
+);
+
+/* ================= SINGLE (hamesha last me) ================= */
+router.get(
+  "/:id",
+  protectVendor,
+  vacationHouseController.getSingleVacationHouse
 );
 
 module.exports = router;

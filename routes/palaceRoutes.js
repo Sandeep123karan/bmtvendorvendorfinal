@@ -11,82 +11,32 @@ const {
   updatePalace,
   deletePalace,
   togglePalaceStatus,
+  setCoverImage,
+  deletePalaceImage,
 } = require("../controllers/palaceController");
-
-
-/* ==========================================
-   APPLY VENDOR AUTH
-========================================== */
 
 router.use(protect);
 
+// Create palace + upload gallery (goes live immediately)
+router.post("/", upload.array("images", 30), createPalace);
 
-/* ==========================================
-   CREATE PALACE
-   POST /api/palaces
-========================================== */
+// List logged-in vendor's palaces
+router.get("/", getMyPalaces);
 
-router.post(
-  "/",
-  upload.any(),
-  createPalace
-);
+// More-specific routes before /:id routes
+router.patch("/:id/cover", setCoverImage);
+router.delete("/:id/images", deletePalaceImage);
 
+// Activate / Deactivate (APPROVED <-> INACTIVE)
+router.patch("/:id/toggle", togglePalaceStatus);
 
-/* ==========================================
-   GET LOGGED-IN VENDOR PALACES
-   GET /api/palaces
-========================================== */
+// Single palace
+router.get("/:id", getPalaceById);
 
-router.get(
-  "/",
-  getMyPalaces
-);
+// Update details + append new gallery images
+router.put("/:id", upload.array("images", 30), updatePalace);
 
-
-/* ==========================================
-   GET SINGLE PALACE
-   GET /api/palaces/:id
-========================================== */
-
-router.get(
-  "/:id",
-  getPalaceById
-);
-
-
-/* ==========================================
-   UPDATE PALACE
-   PUT /api/palaces/:id
-========================================== */
-
-router.put(
-  "/:id",
-  upload.any(),
-  updatePalace
-);
-
-
-/* ==========================================
-   TOGGLE ACTIVE / INACTIVE
-   PATCH /api/palaces/:id/toggle
-========================================== */
-
-router.patch(
-  "/:id/toggle",
-  togglePalaceStatus
-);
-
-
-/* ==========================================
-   DELETE PALACE
-   DELETE /api/palaces/:id
-========================================== */
-
-router.delete(
-  "/:id",
-  deletePalace
-);
-
+// Delete palace and gallery cleanup
+router.delete("/:id", deletePalace);
 
 module.exports = router;

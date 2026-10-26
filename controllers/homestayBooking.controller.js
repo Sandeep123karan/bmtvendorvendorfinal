@@ -1,2398 +1,528 @@
 const mongoose = require("mongoose");
 
 const Homestay = require("../models/Homestay.model");
-const HomestayUnit = require("../models/HomestayUnit.model");
+const HomestayRoom = require("../models/Homestayroom.model");
 const HomestayInventory = require("../models/HomestayInventory.model");
 const HomestayBooking = require("../models/HomestayBooking.model");
 
+const {
+  httpError,
+  sendError,
+  round,
+  normalizeDate,
+  getStayDates,
+  dateKey,
+} = require("../utils/Homestayhelpers");
+
+const {
+  confirmBookingWithInventory,
+  restoreInventoryForBooking,
+} = require("../services/Homestayinventory.service");
+
+const BOOKABLE_HOMESTAY_STATUSES = ["APPROVED"]; // testing ke liye "PENDING" bhi add kar sakte ho
+const MAX_EXTRA_GUESTS_PER_ROOM = 2; // free capacity ke upar max extra guests (agar extraGuestPrice set hai)
+const PAYMENT_METHODS = ["ONLINE", "UPI", "CARD", "NET_BANKING", "PAY_AT_PROPERTY", "COD"];
+
+const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+const requireUser = (req) => {
+  const userId = req.user?._id || req.user?.id;
+  if (!userId) throw httpError(401, "User authentication required.");
+  return userId;
+};
+
+const requireVendor = (req) => {
+  const vendorId = req.vendor?._id;
+  if (!vendorId) throw httpError(401, "Vendor authentication required.");
+  return vendorId;
+};
+
+const findVendorBooking = async (req) => {
+  const vendorId = requireVendor(req);
+  if (!isValidId(req.params.bookingId)) throw httpError(400, "Invalid booking ID.");
+  const booking = await HomestayBooking.findOne({ _id: req.params.bookingId, vendor: vendorId });
+  if (!booking) throw httpError(404, "Booking not found.");
+  return { booking, vendorId };
+};
 
 /* ============================================================
-   HELPERS
+   QUOTE  (availability check + price)  -- create & availability dono use karte hain
 ============================================================ */
+const buildQuote = async ({ roomId, checkInDate, checkOutDate, unitsBooked, adults, children }) => {
+  if (!roomId || !isValidId(roomId)) throw httpError(400, "Valid room ID is required.");
 
-const isValidObjectId = (id) => {
-  return mongoose.Types.ObjectId.isValid(id);
-};
+  const checkIn = normalizeDate(checkInDate);
+  const checkOut = normalizeDate(checkOutDate);
+  if (!checkIn || !checkOut) throw httpError(400, "Valid check-in and check-out dates are required.");
+  if (checkOut <= checkIn) throw httpError(400, "Check-out date must be after check-in date.");
+  if (checkIn < normalizeDate(new Date())) throw httpError(400, "Check-in date cannot be in the past.");
 
+  const room = await HomestayRoom.findById(roomId);
+  if (!room) throw httpError(404, "Room not found.");
+  if (!room.isActive) throw httpError(400, "This room is currently inactive.");
 
-const toNumber = (value, defaultValue = 0) => {
-  if (
-    value === undefined ||
-    value === null ||
-    value === ""
-  ) {
-    return defaultValue;
+  const homestay = await Homestay.findById(room.homestay);
+  if (!homestay) throw httpError(404, "Homestay not found.");
+  if (!homestay.isActive) throw httpError(400, "Homestay is currently inactive.");
+  if (!BOOKABLE_HOMESTAY_STATUSES.includes(homestay.status)) {
+    throw httpError(400, "Homestay is not available for booking.");
   }
 
-  const number = Number(value);
+  const units = Math.max(parseInt(unitsBooked, 10) || 1, 1);
+  const adultsN = Math.max(parseInt(adults, 10) || 1, 1);
+  const childrenN = Math.max(parseInt(children, 10) || 0, 0);
+  const totalGuests = adultsN + childrenN;
 
-  return Number.isNaN(number)
-    ? defaultValue
-    : number;
-};
-
-
-const normalizeDate = (date) => {
-  const parsed = new Date(date);
-
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
-  }
-
-  parsed.setHours(0, 0, 0, 0);
-
-  return parsed;
-};
-
-
-const getDateRange = (
-  checkInDate,
-  checkOutDate
-) => {
-  const start =
-    normalizeDate(checkInDate);
-
-  const end =
-    normalizeDate(checkOutDate);
-
-  if (!start || !end) {
-    return [];
-  }
-
-  if (end <= start) {
-    return [];
-  }
-
-  const dates = [];
-
-  const current =
-    new Date(start);
-
-  while (current < end) {
-    dates.push(
-      new Date(current)
-    );
-
-    current.setDate(
-      current.getDate() + 1
-    );
-  }
-
-  return dates;
-};
-
-
-const calculateNights = (
-  checkInDate,
-  checkOutDate
-) => {
-  const start =
-    normalizeDate(checkInDate);
-
-  const end =
-    normalizeDate(checkOutDate);
-
-  if (!start || !end) {
-    return 0;
-  }
-
-  const difference =
-    end.getTime() -
-    start.getTime();
-
-  return Math.ceil(
-    difference /
-      (1000 * 60 * 60 * 24)
-  );
-};
-
-
-const round = (number) => {
-  return Math.round(
-    number * 100
-  ) / 100;
-};
-
-
-/* ============================================================
-   CALCULATE DISCOUNT
-============================================================ */
-
-const calculateDiscount = (
-  amount,
-  discountType,
-  discountValue
-) => {
-  const value =
-    toNumber(
-      discountValue,
-      0
-    );
-
-  if (
-    !value ||
-    discountType === "none"
-  ) {
-    return 0;
-  }
-
-  if (
-    discountType ===
-    "percentage"
-  ) {
-    return round(
-      (amount * value) / 100
-    );
-  }
-
-  if (
-    discountType === "flat"
-  ) {
-    return Math.min(
-      value,
-      amount
-    );
-  }
-
-  return 0;
-};
-
-
-/* ============================================================
-   CALCULATE BOOKING PRICE
-============================================================ */
-
-const calculateBookingPrice = ({
-  inventories,
-  unit,
-  nights,
-  unitsBooked,
-  adults,
-  children,
-}) => {
-
-  let roomAmount = 0;
-
-  let totalExtraGuestAmount = 0;
-
-  let totalTaxAmount = 0;
-
-  let totalServiceChargeAmount = 0;
-
-
-  const maxGuests =
-    Number(unit.maxGuests || 0);
-
-
-  const extraGuests =
-    Math.max(
-      (
-        Number(adults || 0) +
-        Number(children || 0)
-      ) -
-        maxGuests,
-      0
-    );
-
-
-  const extraGuestPrice =
-    Number(
-      unit.extraGuestPrice || 0
-    );
-
-
-  totalExtraGuestAmount =
-    round(
-      extraGuests *
-        extraGuestPrice *
-        nights
-    );
-
-
-  inventories.forEach(
-    (inventory) => {
-
-      const price =
-        Number(
-          inventory.finalPrice ||
-          inventory.specialPrice ||
-          inventory.basePrice ||
-          0
-        );
-
-
-      roomAmount +=
-        price *
-        unitsBooked;
-
-
-      const tax =
-        Number(
-          inventory.taxPercentage ||
-          0
-        );
-
-
-      const serviceCharge =
-        Number(
-          inventory.serviceChargePercentage ||
-          0
-        );
-
-
-      totalTaxAmount +=
-        (
-          price *
-          unitsBooked *
-          tax
-        ) / 100;
-
-
-      totalServiceChargeAmount +=
-        (
-          price *
-          unitsBooked *
-          serviceCharge
-        ) / 100;
+  /* guest capacity */
+  const freeCapacity = (room.maxGuests || 0) * units;
+  const roomExtraPrice = room.pricing?.extraGuestPrice || 0;
+  if (freeCapacity > 0) {
+    const maxCapacity = freeCapacity + (roomExtraPrice > 0 ? MAX_EXTRA_GUESTS_PER_ROOM * units : 0);
+    if (totalGuests > maxCapacity) {
+      throw httpError(400, `Maximum ${maxCapacity} guests allowed for ${units} room(s).`);
     }
-  );
+  }
+  const extraGuests = freeCapacity > 0 ? Math.max(totalGuests - freeCapacity, 0) : 0;
 
+  /* inventory har raat ke liye */
+  const dates = getStayDates(checkIn, checkOut);
+  const nights = dates.length;
 
-  roomAmount =
-    round(roomAmount);
+  const inventories = await HomestayInventory.find({
+    room: room._id,
+    date: { $gte: dates[0], $lte: dates[nights - 1] },
+  }).sort({ date: 1 });
 
+  if (inventories.length !== nights) {
+    throw httpError(400, "Inventory is not open for all selected dates.");
+  }
 
-  totalTaxAmount =
-    round(totalTaxAmount);
+  for (const inv of inventories) {
+    const key = dateKey(inv.date);
+    if (inv.isBlocked) throw httpError(400, `Room is blocked for ${key}.`);
+    if (inv.stopSell) throw httpError(400, `Booking is stopped for ${key}.`);
+    if (inv.closedForBooking) throw httpError(400, `Booking is closed for ${key}.`);
+    if (!inv.isAvailable) throw httpError(400, `Room is unavailable for ${key}.`);
+    if (inv.availableUnits < units) {
+      throw httpError(400, `Only ${inv.availableUnits} room(s) available for ${key}.`);
+    }
+  }
 
+  const first = inventories[0];
+  if (!first.checkInAllowed) throw httpError(400, `Check-in is not allowed on ${dateKey(first.date)}.`);
+  if (first.minimumStay > nights) throw httpError(400, `Minimum stay is ${first.minimumStay} night(s).`);
+  if (first.maximumStay > 0 && nights > first.maximumStay) {
+    throw httpError(400, `Maximum stay is ${first.maximumStay} night(s).`);
+  }
 
-  totalServiceChargeAmount =
-    round(
-      totalServiceChargeAmount
-    );
+  const checkOutInv = await HomestayInventory.findOne({ room: room._id, date: checkOut }).select("checkOutAllowed");
+  if (checkOutInv && checkOutInv.checkOutAllowed === false) {
+    throw httpError(400, `Check-out is not allowed on ${dateKey(checkOut)}.`);
+  }
 
+  /* price */
+  let roomAmount = 0;
+  let discountAmount = 0;
+  let extraGuestAmount = 0;
+  let taxAmount = 0;
+  let serviceChargeAmount = 0;
 
-  const subtotal =
-    round(
-      roomAmount +
-      totalExtraGuestAmount
-    );
+  inventories.forEach((inv) => {
+    roomAmount += inv.finalPrice * units;
+    discountAmount += Math.max(inv.appliedPrice - inv.finalPrice, 0) * units;
+    extraGuestAmount += extraGuests * (inv.extraGuestPrice || roomExtraPrice);
+    taxAmount += inv.taxAmount * units;
+    serviceChargeAmount += inv.serviceChargeAmount * units;
+  });
 
-
-  const totalAmount =
-    round(
-      subtotal +
-      totalTaxAmount +
-      totalServiceChargeAmount
-    );
-
+  roomAmount = round(roomAmount);
+  extraGuestAmount = round(extraGuestAmount);
+  const subtotal = round(roomAmount + extraGuestAmount);
 
   return {
-    roomAmount,
-
-    extraGuestAmount:
-      totalExtraGuestAmount,
-
-    extraBedAmount: 0,
-
-    mealAmount: 0,
-
-    discountAmount: 0,
-
-    couponDiscount: 0,
-
-    subtotal,
-
-    taxAmount:
-      totalTaxAmount,
-
-    serviceChargeAmount:
-      totalServiceChargeAmount,
-
-    totalAmount,
+    room,
+    homestay,
+    checkIn,
+    checkOut,
+    nights,
+    units,
+    adults: adultsN,
+    children: childrenN,
+    totalGuests,
+    inventories,
+    price: {
+      pricePerNight: round(roomAmount / (nights * units)),
+      roomAmount,
+      extraGuestAmount,
+      discountAmount: round(discountAmount),
+      subtotal,
+      taxPercentage: first.taxPercentage || 0,
+      taxAmount: round(taxAmount),
+      serviceChargePercentage: first.serviceChargePercentage || 0,
+      serviceChargeAmount: round(serviceChargeAmount),
+      totalAmount: round(subtotal + taxAmount + serviceChargeAmount),
+    },
   };
 };
 
-
 /* ============================================================
-   CHECK VENDOR HOMESTAY
+   GET /availability  (public)  ?roomId&checkInDate&checkOutDate&unitsBooked&adults&children
 ============================================================ */
-
-const findVendorHomestay = async (
-  homestayId,
-  vendorId
-) => {
-  return Homestay.findOne({
-    _id: homestayId,
-    vendor: vendorId,
-  });
-};
-
-
-/* ============================================================
-   CREATE BOOKING
-============================================================ */
-
-exports.createBooking = async (
-  req,
-  res
-) => {
-  const session =
-    await mongoose.startSession();
-
+exports.checkAvailability = async (req, res) => {
   try {
-
-    const userId =
-      req.user?._id ||
-      req.user?.id;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message:
-          "User authentication required.",
-      });
-    }
-
-
-    const {
-      homestayId,
-      unitId,
-
-      checkInDate,
-      checkOutDate,
-
-      adults,
-      children,
-      infants,
-
-      guestName,
-      guestEmail,
-      guestPhone,
-      alternatePhone,
-
-      guestNames,
-
-      specialRequest,
-
-      unitsBooked = 1,
-
-      paymentMethod =
-        "ONLINE",
-
-      bookingSource =
-        "WEBSITE",
-    } = req.body;
-
-
-    /* ========================================================
-       VALIDATION
-    ======================================================== */
-
-    if (!homestayId) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Homestay ID is required.",
-      });
-    }
-
-
-    if (!unitId) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Unit ID is required.",
-      });
-    }
-
-
-    if (!checkInDate) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Check-in date is required.",
-      });
-    }
-
-
-    if (!checkOutDate) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Check-out date is required.",
-      });
-    }
-
-
-    if (
-      !isValidObjectId(
-        homestayId
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid homestay ID.",
-      });
-    }
-
-
-    if (
-      !isValidObjectId(
-        unitId
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid unit ID.",
-      });
-    }
-
-
-    const checkIn =
-      normalizeDate(
-        checkInDate
-      );
-
-
-    const checkOut =
-      normalizeDate(
-        checkOutDate
-      );
-
-
-    if (!checkIn || !checkOut) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid check-in or check-out date.",
-      });
-    }
-
-
-    if (checkOut <= checkIn) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Check-out date must be after check-in date.",
-      });
-    }
-
-
-    const nights =
-      calculateNights(
-        checkIn,
-        checkOut
-      );
-
-
-    if (nights <= 0) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid number of nights.",
-      });
-    }
-
-
-    const requestedUnits =
-      Math.max(
-        Number(unitsBooked) || 1,
-        1
-      );
-
-
-    const requestedAdults =
-      Math.max(
-        Number(adults) || 1,
-        1
-      );
-
-
-    const requestedChildren =
-      Math.max(
-        Number(children) || 0,
-        0
-      );
-
-
-    /* ========================================================
-       START TRANSACTION
-    ======================================================== */
-
-    session.startTransaction();
-
-
-    /* ========================================================
-       FIND HOMESTAY
-    ======================================================== */
-
-    const homestay =
-      await Homestay.findById(
-        homestayId
-      ).session(session);
-
-
-    if (!homestay) {
-
-      await session.abortTransaction();
-
-      return res.status(404).json({
-        success: false,
-        message:
-          "Homestay not found.",
-      });
-    }
-
-
-    if (
-      !homestay.isActive
-    ) {
-
-      await session.abortTransaction();
-
-      return res.status(400).json({
-        success: false,
-        message:
-          "Homestay is currently inactive.",
-      });
-    }
-
-
-    if (
-      homestay.status !==
-        "APPROVED" &&
-      homestay.status !==
-        "PENDING"
-    ) {
-
-      await session.abortTransaction();
-
-      return res.status(400).json({
-        success: false,
-        message:
-          "Homestay is not available for booking.",
-      });
-    }
-
-
-    /* ========================================================
-       FIND UNIT
-    ======================================================== */
-
-    const unit =
-      await HomestayUnit.findOne({
-        _id: unitId,
-        homestay: homestayId,
-      }).session(session);
-
-
-    if (!unit) {
-
-      await session.abortTransaction();
-
-      return res.status(404).json({
-        success: false,
-        message:
-          "Homestay unit not found.",
-      });
-    }
-
-
-    if (
-      !unit.isActive
-    ) {
-
-      await session.abortTransaction();
-
-      return res.status(400).json({
-        success: false,
-        message:
-          "This unit is currently inactive.",
-      });
-    }
-
-
-    if (
-      unit.status !== "ACTIVE"
-    ) {
-
-      await session.abortTransaction();
-
-      return res.status(400).json({
-        success: false,
-        message:
-          "This unit is not available for booking.",
-      });
-    }
-
-
-    /* ========================================================
-       CHECK GUEST CAPACITY
-    ======================================================== */
-
-    const totalGuests =
-      requestedAdults +
-      requestedChildren;
-
-
-    if (
-      unit.maxGuests > 0 &&
-      totalGuests >
-        unit.maxGuests *
-          requestedUnits
-    ) {
-
-      await session.abortTransaction();
-
-      return res.status(400).json({
-        success: false,
-        message:
-          `Maximum ${unit.maxGuests} guests are allowed per unit.`,
-      });
-    }
-
-
-    /* ========================================================
-       GET INVENTORY
-    ======================================================== */
-
-    const dates =
-      getDateRange(
-        checkIn,
-        checkOut
-      );
-
-
-    const inventories =
-      await HomestayInventory.find({
-        homestay:
-          homestayId,
-
-        unit:
-          unitId,
-
-        vendor:
-          homestay.vendor,
-
-        date: {
-          $gte: dates[0],
-          $lte:
-            dates[
-              dates.length - 1
-            ],
-        },
-      })
-        .sort({
-          date: 1,
-        })
-        .session(session);
-
-
-    /* ========================================================
-       INVENTORY COUNT CHECK
-    ======================================================== */
-
-    if (
-      inventories.length !==
-      dates.length
-    ) {
-
-      await session.abortTransaction();
-
-      return res.status(400).json({
-        success: false,
-        message:
-          "Inventory is not available for all selected dates.",
-      });
-    }
-
-
-    /* ========================================================
-       CHECK EVERY DATE
-    ======================================================== */
-
-    for (
-      const inventory
-      of inventories
-    ) {
-
-      if (
-        inventory.isBlocked
-      ) {
-
-        await session.abortTransaction();
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            `Inventory is blocked for ${inventory.date.toISOString().split("T")[0]}.`,
-        });
-      }
-
-
-      if (
-        inventory.stopSell
-      ) {
-
-        await session.abortTransaction();
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            `Booking is stopped for ${inventory.date.toISOString().split("T")[0]}.`,
-        });
-      }
-
-
-      if (
-        inventory.closedForBooking
-      ) {
-
-        await session.abortTransaction();
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            `Booking is closed for ${inventory.date.toISOString().split("T")[0]}.`,
-        });
-      }
-
-
-      if (
-        !inventory.isAvailable
-      ) {
-
-        await session.abortTransaction();
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            `Unit is unavailable for ${inventory.date.toISOString().split("T")[0]}.`,
-        });
-      }
-
-
-      if (
-        inventory.availableUnits <
-        requestedUnits
-      ) {
-
-        await session.abortTransaction();
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            `Only ${inventory.availableUnits} unit(s) available for ${inventory.date.toISOString().split("T")[0]}.`,
-        });
-      }
-
-
-      if (
-        inventory.minimumStay >
-        nights
-      ) {
-
-        await session.abortTransaction();
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            `Minimum stay is ${inventory.minimumStay} night(s).`,
-        });
-      }
-
-
-      if (
-        inventory.maximumStay > 0 &&
-        nights >
-          inventory.maximumStay
-      ) {
-
-        await session.abortTransaction();
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            `Maximum stay is ${inventory.maximumStay} night(s).`,
-        });
-      }
-    }
-
-
-    /* ========================================================
-       CALCULATE PRICE
-    ======================================================== */
-
-    const price =
-      calculateBookingPrice({
-        inventories,
-
-        unit,
-
-        nights,
-
-        unitsBooked:
-          requestedUnits,
-
-        adults:
-          requestedAdults,
-
-        children:
-          requestedChildren,
-      });
-
-
-    /* ========================================================
-       ADMIN COMMISSION
-    ======================================================== */
-
-    const commissionPercentage =
-      0;
-
-
-    const commissionAmount =
-      round(
-        (
-          price.totalAmount *
-          commissionPercentage
-        ) / 100
-      );
-
-
-    const vendorAmount =
-      round(
-        price.totalAmount -
-        commissionAmount
-      );
-
-
-    /* ========================================================
-       PAYMENT STATUS
-    ======================================================== */
-
-    const onlinePaymentMethods = [
-      "ONLINE",
-      "UPI",
-      "CARD",
-      "NET_BANKING",
-    ];
-
-
-    const paymentStatus =
-      onlinePaymentMethods.includes(
-        paymentMethod
-      )
-        ? "PENDING"
-        : "PENDING";
-
-
-    /* ========================================================
-       CREATE BOOKING
-    ======================================================== */
-
-    const booking =
-      new HomestayBooking({
-        user:
-          userId,
-
-        guestName:
-          guestName ||
-          "Guest",
-
-        guestEmail:
-          guestEmail ||
-          "",
-
-        guestPhone:
-          guestPhone ||
-          "",
-
-        alternatePhone:
-          alternatePhone ||
-          "",
-
-
-        homestay:
-          homestayId,
-
-        unit:
-          unitId,
-
-        inventory:
-          inventories[0]?._id ||
-          null,
-
-        vendor:
-          homestay.vendor,
-
-
-        checkInDate:
-          checkIn,
-
-        checkOutDate:
-          checkOut,
-
-        nights,
-
-        unitsBooked:
-          requestedUnits,
-
-
-        adults:
-          requestedAdults,
-
-        children:
-          requestedChildren,
-
-        infants:
-          Number(infants) || 0,
-
-        totalGuests,
-
-        guestNames:
-          Array.isArray(
-            guestNames
-          )
-            ? guestNames
-            : [],
-
-
-        specialRequest:
-          specialRequest ||
-          "",
-
-
-        pricePerNight:
-          unit.basePrice ||
-          0,
-
-        roomAmount:
-          price.roomAmount,
-
-        extraGuestAmount:
-          price.extraGuestAmount,
-
-        extraBedAmount:
-          price.extraBedAmount,
-
-        mealAmount:
-          price.mealAmount,
-
-        discountAmount:
-          price.discountAmount,
-
-        couponDiscount:
-          price.couponDiscount,
-
-        subtotal:
-          price.subtotal,
-
-
-        taxPercentage:
-          inventories[0]
-            ?.taxPercentage ||
-          0,
-
-        taxAmount:
-          price.taxAmount,
-
-
-        serviceChargePercentage:
-          inventories[0]
-            ?.serviceChargePercentage ||
-          0,
-
-        serviceChargeAmount:
-          price.serviceChargeAmount,
-
-
-        totalAmount:
-          price.totalAmount,
-
-
-        paymentMethod:
-          paymentMethod,
-
-        paymentStatus:
-          paymentStatus,
-
-
-        bookingStatus:
-          "PENDING",
-
-        vendorConfirmation:
-          "PENDING",
-
-
-        adminCommissionType:
-          "PERCENTAGE",
-
-        adminCommissionPercentage:
-          commissionPercentage,
-
-        adminCommissionAmount:
-          commissionAmount,
-
-        vendorAmount:
-          vendorAmount,
-
-
-        settlementStatus:
-          "PENDING",
-
-
-        bookingSource:
-          bookingSource,
-      });
-
-
-    await booking.save({
-      session,
+    const q = req.query;
+    const quote = await buildQuote({
+      roomId: q.roomId,
+      checkInDate: q.checkInDate,
+      checkOutDate: q.checkOutDate,
+      unitsBooked: q.unitsBooked,
+      adults: q.adults,
+      children: q.children,
     });
-
-
-    /* ========================================================
-       RESERVE INVENTORY
-    ======================================================== */
-
-    for (
-      const inventory
-      of inventories
-    ) {
-
-      const updated =
-        await HomestayInventory.findOneAndUpdate(
-          {
-            _id:
-              inventory._id,
-
-            availableUnits: {
-              $gte:
-                requestedUnits,
-            },
-
-            isAvailable:
-              true,
-
-            isBlocked:
-              false,
-
-            stopSell:
-              false,
-
-            closedForBooking:
-              false,
-          },
-
-          {
-            $inc: {
-              availableUnits:
-                -requestedUnits,
-
-              bookedUnits:
-                requestedUnits,
-
-              totalBookings:
-                1,
-            },
-
-            $set: {
-              lastUpdatedAt:
-                new Date(),
-            },
-          },
-
-          {
-            new: true,
-
-            session,
-          }
-        );
-
-
-      if (!updated) {
-
-        await session.abortTransaction();
-
-        return res.status(409).json({
-          success: false,
-
-          message:
-            "Room availability changed. Please search again.",
-        });
-      }
-    }
-
-
-    /* ========================================================
-       COMMIT
-    ======================================================== */
-
-    await session.commitTransaction();
-
-
-    return res.status(201).json({
-      success: true,
-
-      message:
-        "Homestay booking created successfully.",
-
-      booking,
-    });
-
-  } catch (error) {
-
-    await session.abortTransaction();
-
-    console.error(
-      "Create Homestay Booking Error:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-
-      message:
-        "Failed to create homestay booking.",
-
-      error:
-        error.message,
-    });
-
-  } finally {
-
-    session.endSession();
-  }
-};
-
-
-/* ============================================================
-   GET USER BOOKINGS
-============================================================ */
-
-exports.getMyBookings = async (
-  req,
-  res
-) => {
-  try {
-
-    const userId =
-      req.user?._id ||
-      req.user?.id;
-
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message:
-          "User authentication required.",
-      });
-    }
-
-
-    const bookings =
-      await HomestayBooking.find({
-        user:
-          userId,
-      })
-        .populate(
-          "homestay",
-          "propertyName city state coverImage averageRating"
-        )
-        .populate(
-          "unit",
-          "unitName unitType coverImage"
-        )
-        .sort({
-          createdAt: -1,
-        });
-
 
     return res.status(200).json({
       success: true,
-
-      count:
-        bookings.length,
-
-      bookings,
+      available: true,
+      nights: quote.nights,
+      unitsBooked: quote.units,
+      price: quote.price,
     });
-
-  } catch (error) {
-
-    console.error(
-      "Get My Bookings Error:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-
-      message:
-        "Failed to fetch bookings.",
-
-      error:
-        error.message,
-    });
+  } catch (err) {
+    if (err.status === 400) {
+      return res.status(200).json({ success: true, available: false, message: err.message });
+    }
+    return sendError(res, err, "Failed to check availability.", "Availability Error");
   }
 };
 
-
 /* ============================================================
-   GET SINGLE USER BOOKING
+   POST /  (user)  -> PENDING booking, inventory abhi minus nahi
+   body: roomId, checkInDate, checkOutDate, adults, children, infants, unitsBooked,
+         guestName, guestEmail, guestPhone, specialRequest, paymentMethod
 ============================================================ */
+exports.createBooking = async (req, res) => {
+  try {
+    const userId = requireUser(req);
+    const b = req.body;
 
-exports.getMyBookingById =
-  async (
-    req,
-    res
-  ) => {
-    try {
+    const quote = await buildQuote({
+      roomId: b.roomId,
+      checkInDate: b.checkInDate,
+      checkOutDate: b.checkOutDate,
+      unitsBooked: b.unitsBooked,
+      adults: b.adults,
+      children: b.children,
+    });
 
-      const userId =
-        req.user?._id ||
-        req.user?.id;
-
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "User authentication required.",
-        });
-      }
-
-
-      const booking =
-        await HomestayBooking.findOne({
-          _id:
-            req.params.bookingId,
-
-          user:
-            userId,
-        })
-          .populate(
-            "homestay"
-          )
-          .populate(
-            "unit"
-          );
-
-
-      if (!booking) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Booking not found.",
-        });
-      }
-
-
-      return res.status(200).json({
-        success: true,
-        booking,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Get Booking Error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Failed to fetch booking.",
-
-        error:
-          error.message,
-      });
+    const guestName = String(b.guestName || req.user.fullname || req.user.name || "").trim();
+    const guestEmail = String(b.guestEmail || req.user.email || "").trim();
+    const guestPhone = String(b.guestPhone || req.user.phone || "").trim();
+    if (!guestName || !guestEmail || !guestPhone) {
+      throw httpError(400, "Guest name, email and phone are required.");
     }
-  };
 
+    const { price } = quote;
+
+    const booking = await HomestayBooking.create({
+      user: userId,
+      guestName,
+      guestEmail,
+      guestPhone,
+      alternatePhone: b.alternatePhone || "",
+
+      homestay: quote.homestay._id,
+      room: quote.room._id,
+      inventory: quote.inventories[0]._id,
+      vendor: quote.homestay.vendor,
+
+      checkInDate: quote.checkIn,
+      checkOutDate: quote.checkOut,
+      nights: quote.nights,
+      unitsBooked: quote.units,
+
+      adults: quote.adults,
+      children: quote.children,
+      infants: Math.max(Number(b.infants) || 0, 0),
+      guestNames: Array.isArray(b.guestNames) ? b.guestNames : [],
+      specialRequest: b.specialRequest || "",
+
+      pricePerNight: price.pricePerNight,
+      roomAmount: price.roomAmount,
+      extraGuestAmount: price.extraGuestAmount,
+      discountAmount: price.discountAmount,
+      subtotal: price.subtotal,
+      taxPercentage: price.taxPercentage,
+      taxAmount: price.taxAmount,
+      serviceChargePercentage: price.serviceChargePercentage,
+      serviceChargeAmount: price.serviceChargeAmount,
+      totalAmount: price.totalAmount,
+
+      paymentMethod: PAYMENT_METHODS.includes(b.paymentMethod) ? b.paymentMethod : "ONLINE",
+      paymentStatus: "PENDING",
+      bookingStatus: "PENDING",
+      vendorConfirmation: "PENDING",
+      inventoryDeducted: false,
+
+      adminCommissionType: "PERCENTAGE",
+      adminCommissionPercentage: 0,
+      adminCommissionAmount: 0,
+      vendorAmount: price.totalAmount,
+      settlementStatus: "PENDING",
+
+      bookingSource: b.bookingSource || "WEBSITE",
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Booking request created. Inventory will be reserved once the booking is confirmed.",
+      booking,
+    });
+  } catch (err) {
+    return sendError(res, err, "Failed to create homestay booking.", "Create Booking Error");
+  }
+};
 
 /* ============================================================
-   GET VENDOR BOOKINGS
+   USER: my bookings
 ============================================================ */
+exports.getMyBookings = async (req, res) => {
+  try {
+    const userId = requireUser(req);
+    const bookings = await HomestayBooking.find({ user: userId })
+      .populate("homestay", "propertyName city state coverImage averageRating")
+      .populate("room", "roomName roomType images")
+      .sort({ createdAt: -1 });
 
-exports.getVendorBookings =
-  async (
-    req,
-    res
-  ) => {
-    try {
+    return res.status(200).json({ success: true, count: bookings.length, bookings });
+  } catch (err) {
+    return sendError(res, err, "Failed to fetch bookings.", "Get My Bookings Error");
+  }
+};
 
-      const vendorId =
-        req.vendor?._id;
+exports.getMyBookingById = async (req, res) => {
+  try {
+    const userId = requireUser(req);
+    if (!isValidId(req.params.bookingId)) throw httpError(400, "Invalid booking ID.");
 
+    const booking = await HomestayBooking.findOne({ _id: req.params.bookingId, user: userId })
+      .populate("homestay")
+      .populate("room");
+    if (!booking) throw httpError(404, "Booking not found.");
 
-      if (!vendorId) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "Vendor authentication required.",
-        });
-      }
+    return res.status(200).json({ success: true, booking });
+  } catch (err) {
+    return sendError(res, err, "Failed to fetch booking.", "Get Booking Error");
+  }
+};
 
+/* ============================================================
+   VENDOR: list / single
+============================================================ */
+exports.getVendorBookings = async (req, res) => {
+  try {
+    const vendorId = requireVendor(req);
+    const { status, paymentStatus, startDate, endDate, page = 1, limit = 20 } = req.query;
 
-      const {
-        status,
-        paymentStatus,
-        startDate,
-        endDate,
-        page = 1,
-        limit = 20,
-      } = req.query;
+    const filter = { vendor: vendorId };
+    if (status) filter.bookingStatus = String(status).toUpperCase();
+    if (paymentStatus) filter.paymentStatus = String(paymentStatus).toUpperCase();
 
+    const start = startDate ? normalizeDate(startDate) : null;
+    const end = endDate ? normalizeDate(endDate) : null;
+    if ((startDate && !start) || (endDate && !end)) throw httpError(400, "Invalid date range.");
+    if (start || end) {
+      filter.checkInDate = {};
+      if (start) filter.checkInDate.$gte = start;
+      if (end) filter.checkInDate.$lte = end;
+    }
 
-      const filter = {
-        vendor:
-          vendorId,
-      };
+    const pageNumber = Math.max(Number(page) || 1, 1);
+    const limitNumber = Math.min(Math.max(Number(limit) || 20, 1), 100);
 
+    const [bookings, total] = await Promise.all([
+      HomestayBooking.find(filter)
+        .populate("homestay", "propertyName city state coverImage")
+        .populate("room", "roomName roomType")
+        .sort({ createdAt: -1 })
+        .skip((pageNumber - 1) * limitNumber)
+        .limit(limitNumber),
+      HomestayBooking.countDocuments(filter),
+    ]);
 
-      if (status) {
-        filter.bookingStatus =
-          status;
-      }
-
-
-      if (paymentStatus) {
-        filter.paymentStatus =
-          paymentStatus;
-      }
-
-
-      if (
-        startDate &&
-        endDate
-      ) {
-
-        const start =
-          normalizeDate(
-            startDate
-          );
-
-        const end =
-          normalizeDate(
-            endDate
-          );
-
-
-        if (
-          !start ||
-          !end
-        ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid date range.",
-          });
-        }
-
-
-        end.setHours(
-          23,
-          59,
-          59,
-          999
-        );
-
-
-        filter.checkInDate = {
-          $gte: start,
-          $lte: end,
-        };
-      }
-
-
-      const pageNumber =
-        Math.max(
-          Number(page) || 1,
-          1
-        );
-
-
-      const limitNumber =
-        Math.min(
-          Math.max(
-            Number(limit) || 20,
-            1
-          ),
-          100
-        );
-
-
-      const skip =
-        (
-          pageNumber - 1
-        ) *
-        limitNumber;
-
-
-      const [
-        bookings,
+    return res.status(200).json({
+      success: true,
+      pagination: {
         total,
-      ] = await Promise.all([
-        HomestayBooking.find(
-          filter
-        )
-          .populate(
-            "homestay",
-            "propertyName city state coverImage"
-          )
-          .populate(
-            "unit",
-            "unitName unitType"
-          )
-          .sort({
-            createdAt: -1,
-          })
-          .skip(skip)
-          .limit(limitNumber),
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.max(Math.ceil(total / limitNumber), 1),
+      },
+      bookings,
+    });
+  } catch (err) {
+    return sendError(res, err, "Failed to fetch vendor bookings.", "Get Vendor Bookings Error");
+  }
+};
 
-        HomestayBooking.countDocuments(
-          filter
-        ),
-      ]);
-
-
-      return res.status(200).json({
-        success: true,
-
-        pagination: {
-          total,
-
-          page:
-            pageNumber,
-
-          limit:
-            limitNumber,
-
-          totalPages:
-            Math.ceil(
-              total /
-                limitNumber
-            ),
-        },
-
-        bookings,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Get Vendor Bookings Error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Failed to fetch vendor bookings.",
-
-        error:
-          error.message,
-      });
-    }
-  };
-
+exports.getVendorBookingById = async (req, res) => {
+  try {
+    const { booking } = await findVendorBooking(req);
+    await booking.populate([
+      { path: "homestay" },
+      { path: "room" },
+      { path: "user", select: "-password -refreshToken" },
+    ]);
+    return res.status(200).json({ success: true, booking });
+  } catch (err) {
+    return sendError(res, err, "Failed to fetch booking.", "Get Vendor Booking Error");
+  }
+};
 
 /* ============================================================
-   GET VENDOR SINGLE BOOKING
+   VENDOR: confirm  ->  CONFIRMED + inventory minus
 ============================================================ */
+exports.confirmBooking = async (req, res) => {
+  try {
+    const { booking } = await findVendorBooking(req);
+    await confirmBookingWithInventory(booking);
 
-exports.getVendorBookingById =
-  async (
-    req,
-    res
-  ) => {
-    try {
-
-      const vendorId =
-        req.vendor?._id;
-
-
-      if (!vendorId) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "Vendor authentication required.",
-        });
-      }
-
-
-      const booking =
-        await HomestayBooking.findOne({
-          _id:
-            req.params.bookingId,
-
-          vendor:
-            vendorId,
-        })
-          .populate(
-            "homestay"
-          )
-          .populate(
-            "unit"
-          )
-          .populate(
-            "user",
-            "-password"
-          );
-
-
-      if (!booking) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Booking not found.",
-        });
-      }
-
-
-      return res.status(200).json({
-        success: true,
-
-        booking,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Get Vendor Booking Error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Failed to fetch booking.",
-
-        error:
-          error.message,
-      });
-    }
-  };
-
+    return res.status(200).json({
+      success: true,
+      message: "Booking confirmed and inventory updated.",
+      booking,
+    });
+  } catch (err) {
+    return sendError(res, err, "Failed to confirm booking.", "Confirm Booking Error");
+  }
+};
 
 /* ============================================================
-   CONFIRM BOOKING
+   Cancel / Reject common logic  ->  inventory wapas plus
 ============================================================ */
+const releaseBooking = async (booking, { status, cancelledBy, reason }) => {
+  await restoreInventoryForBooking(booking);
 
-exports.confirmBooking =
-  async (
-    req,
-    res
-  ) => {
-    try {
+  booking.bookingStatus = status;
 
-      const vendorId =
-        req.vendor?._id;
+  if (status === "REJECTED") {
+    booking.vendorConfirmation = "REJECTED";
+    booking.vendorRejectionReason = reason;
+  } else {
+    booking.cancellationRequested = true;
+  }
 
+  booking.cancelledBy = cancelledBy;
+  booking.cancelledAt = new Date();
+  booking.cancellationReason = reason;
 
-      if (!vendorId) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "Vendor authentication required.",
-        });
-      }
+  if (booking.paymentStatus === "PAID") {
+    booking.refundAmount = booking.totalAmount;
+    booking.refundStatus = "PENDING";
+    booking.paymentStatus = "REFUND_PENDING";
+  }
 
+  await booking.save();
+};
 
-      const booking =
-        await HomestayBooking.findOne({
-          _id:
-            req.params.bookingId,
+/* VENDOR reject (PENDING ya CONFIRMED) */
+exports.rejectBooking = async (req, res) => {
+  try {
+    const { booking } = await findVendorBooking(req);
 
-          vendor:
-            vendorId,
-        });
-
-
-      if (!booking) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Booking not found.",
-        });
-      }
-
-
-      if (
-        booking.bookingStatus ===
-        "CANCELLED"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Cancelled booking cannot be confirmed.",
-        });
-      }
-
-
-      if (
-        booking.bookingStatus ===
-        "COMPLETED"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Completed booking cannot be confirmed.",
-        });
-      }
-
-
-      booking.bookingStatus =
-        "CONFIRMED";
-
-      booking.vendorConfirmation =
-        "CONFIRMED";
-
-      booking.vendorConfirmedAt =
-        new Date();
-
-
-      await booking.save();
-
-
-      return res.status(200).json({
-        success: true,
-
-        message:
-          "Booking confirmed successfully.",
-
-        booking,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Confirm Booking Error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Failed to confirm booking.",
-
-        error:
-          error.message,
-      });
+    if (!["PENDING", "CONFIRMED"].includes(booking.bookingStatus)) {
+      throw httpError(400, `A ${booking.bookingStatus} booking cannot be rejected.`);
     }
-  };
 
+    await releaseBooking(booking, {
+      status: "REJECTED",
+      cancelledBy: "VENDOR",
+      reason: req.body.reason || "Booking rejected by vendor",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Booking rejected and inventory restored.",
+      booking,
+    });
+  } catch (err) {
+    return sendError(res, err, "Failed to reject booking.", "Reject Booking Error");
+  }
+};
+
+/* USER cancel */
+exports.cancelBooking = async (req, res) => {
+  try {
+    const userId = requireUser(req);
+    if (!isValidId(req.params.bookingId)) throw httpError(400, "Invalid booking ID.");
+
+    const booking = await HomestayBooking.findOne({ _id: req.params.bookingId, user: userId });
+    if (!booking) throw httpError(404, "Booking not found.");
+
+    if (!["PENDING", "CONFIRMED"].includes(booking.bookingStatus)) {
+      throw httpError(400, "Booking cannot be cancelled.");
+    }
+
+    await releaseBooking(booking, {
+      status: "CANCELLED",
+      cancelledBy: "USER",
+      reason: req.body.reason || "Cancelled by customer",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Booking cancelled successfully.",
+      booking,
+    });
+  } catch (err) {
+    return sendError(res, err, "Failed to cancel booking.", "Cancel Booking Error");
+  }
+};
 
 /* ============================================================
-   REJECT BOOKING
+   VENDOR: check-in / check-out / complete
 ============================================================ */
-
-exports.rejectBooking =
-  async (
-    req,
-    res
-  ) => {
-    const session =
-      await mongoose.startSession();
-
-    try {
-
-      const vendorId =
-        req.vendor?._id;
-
-
-      if (!vendorId) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "Vendor authentication required.",
-        });
-      }
-
-
-      const {
-        reason,
-      } = req.body;
-
-
-      session.startTransaction();
-
-
-      const booking =
-        await HomestayBooking.findOne({
-          _id:
-            req.params.bookingId,
-
-          vendor:
-            vendorId,
-        }).session(session);
-
-
-      if (!booking) {
-
-        await session.abortTransaction();
-
-        return res.status(404).json({
-          success: false,
-          message:
-            "Booking not found.",
-        });
-      }
-
-
-      if (
-        [
-          "CHECKED_IN",
-          "CHECKED_OUT",
-          "COMPLETED",
-        ].includes(
-          booking.bookingStatus
-        )
-      ) {
-
-        await session.abortTransaction();
-
-        return res.status(400).json({
-          success: false,
-          message:
-            "This booking cannot be rejected.",
-        });
-      }
-
-
-      /* ======================================================
-         RESTORE INVENTORY
-      ====================================================== */
-
-      const inventories =
-        await HomestayInventory.find({
-          homestay:
-            booking.homestay,
-
-          unit:
-            booking.unit,
-
-          vendor:
-            vendorId,
-
-          date: {
-            $gte:
-              normalizeDate(
-                booking.checkInDate
-              ),
-
-            $lt:
-              normalizeDate(
-                booking.checkOutDate
-              ),
-          },
-        }).session(session);
-
-
-      for (
-        const inventory
-        of inventories
-      ) {
-
-        inventory.bookedUnits =
-          Math.max(
-            inventory.bookedUnits -
-              booking.unitsBooked,
-            0
-          );
-
-
-        inventory.availableUnits =
-          Math.min(
-            inventory.availableUnits +
-              booking.unitsBooked,
-
-            inventory.totalUnits
-          );
-
-
-        inventory.isAvailable =
-          inventory.availableUnits >
-            0 &&
-          !inventory.isBlocked &&
-          !inventory.stopSell &&
-          !inventory.closedForBooking;
-
-
-        await inventory.save({
-          session,
-        });
-      }
-
-
-      booking.bookingStatus =
-        "REJECTED";
-
-      booking.vendorConfirmation =
-        "REJECTED";
-
-      booking.vendorRejectionReason =
-        reason ||
-        "Booking rejected by vendor";
-
-
-      await booking.save({
-        session,
-      });
-
-
-      await session.commitTransaction();
-
-
-      return res.status(200).json({
-        success: true,
-
-        message:
-          "Booking rejected and inventory restored.",
-
-        booking,
-      });
-
-    } catch (error) {
-
-      await session.abortTransaction();
-
-      console.error(
-        "Reject Booking Error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Failed to reject booking.",
-
-        error:
-          error.message,
-      });
-
-    } finally {
-
-      session.endSession();
+exports.checkIn = async (req, res) => {
+  try {
+    const { booking, vendorId } = await findVendorBooking(req);
+    if (booking.bookingStatus !== "CONFIRMED") {
+      throw httpError(400, "Only confirmed bookings can be checked in.");
     }
-  };
-
-
-/* ============================================================
-   CANCEL BOOKING BY USER
-============================================================ */
-
-exports.cancelBooking =
-  async (
-    req,
-    res
-  ) => {
-
-    const session =
-      await mongoose.startSession();
-
-    try {
-
-      const userId =
-        req.user?._id ||
-        req.user?.id;
-
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "User authentication required.",
-        });
-      }
-
-
-      const booking =
-        await HomestayBooking.findOne({
-          _id:
-            req.params.bookingId,
-
-          user:
-            userId,
-        });
-
-
-      if (!booking) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Booking not found.",
-        });
-      }
-
-
-      if (
-        [
-          "CANCELLED",
-          "CHECKED_OUT",
-          "COMPLETED",
-        ].includes(
-          booking.bookingStatus
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Booking cannot be cancelled.",
-        });
-      }
-
-
-      const {
-        reason,
-      } = req.body;
-
-
-      session.startTransaction();
-
-
-      /* ======================================================
-         RESTORE INVENTORY
-      ====================================================== */
-
-      const inventories =
-        await HomestayInventory.find({
-          homestay:
-            booking.homestay,
-
-          unit:
-            booking.unit,
-
-          vendor:
-            booking.vendor,
-
-          date: {
-            $gte:
-              normalizeDate(
-                booking.checkInDate
-              ),
-
-            $lt:
-              normalizeDate(
-                booking.checkOutDate
-              ),
-          },
-        }).session(session);
-
-
-      for (
-        const inventory
-        of inventories
-      ) {
-
-        inventory.bookedUnits =
-          Math.max(
-            inventory.bookedUnits -
-              booking.unitsBooked,
-            0
-          );
-
-
-        inventory.availableUnits =
-          Math.min(
-            inventory.availableUnits +
-              booking.unitsBooked,
-
-            inventory.totalUnits
-          );
-
-
-        inventory.isAvailable =
-          inventory.availableUnits >
-            0 &&
-          !inventory.isBlocked &&
-          !inventory.stopSell &&
-          !inventory.closedForBooking;
-
-
-        await inventory.save({
-          session,
-        });
-      }
-
-
-      booking.bookingStatus =
-        "CANCELLED";
-
-      booking.cancelledBy =
-        "USER";
-
-      booking.cancelledAt =
-        new Date();
-
-      booking.cancellationRequested =
-        true;
-
-      booking.cancellationReason =
-        reason ||
-        "Cancelled by customer";
-
-
-      /* ======================================================
-         REFUND
-      ====================================================== */
-
-      if (
-        booking.paymentStatus ===
-        "PAID"
-      ) {
-
-        booking.refundAmount =
-          booking.totalAmount;
-
-        booking.refundStatus =
-          "PENDING";
-
-        booking.paymentStatus =
-          "REFUND_PENDING";
-      }
-
-
-      await booking.save({
-        session,
-      });
-
-
-      await session.commitTransaction();
-
-
-      return res.status(200).json({
-        success: true,
-
-        message:
-          "Booking cancelled successfully.",
-
-        booking,
-      });
-
-    } catch (error) {
-
-      await session.abortTransaction();
-
-      console.error(
-        "Cancel Booking Error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Failed to cancel booking.",
-
-        error:
-          error.message,
-      });
-
-    } finally {
-
-      session.endSession();
+    booking.bookingStatus = "CHECKED_IN";
+    booking.actualCheckInAt = new Date();
+    booking.checkInBy = vendorId.toString();
+    await booking.save();
+    return res.status(200).json({ success: true, message: "Guest checked in successfully.", booking });
+  } catch (err) {
+    return sendError(res, err, "Failed to check in guest.", "Check In Error");
+  }
+};
+
+exports.checkOut = async (req, res) => {
+  try {
+    const { booking, vendorId } = await findVendorBooking(req);
+    if (booking.bookingStatus !== "CHECKED_IN") {
+      throw httpError(400, "Guest must be checked in before checkout.");
     }
-  };
+    booking.bookingStatus = "CHECKED_OUT";
+    booking.actualCheckOutAt = new Date();
+    booking.checkOutBy = vendorId.toString();
+    await booking.save();
+    return res.status(200).json({ success: true, message: "Guest checked out successfully.", booking });
+  } catch (err) {
+    return sendError(res, err, "Failed to check out guest.", "Check Out Error");
+  }
+};
 
-
-/* ============================================================
-   CHECK-IN
-============================================================ */
-
-exports.checkIn =
-  async (
-    req,
-    res
-  ) => {
-    try {
-
-      const vendorId =
-        req.vendor?._id;
-
-
-      if (!vendorId) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "Vendor authentication required.",
-        });
-      }
-
-
-      const booking =
-        await HomestayBooking.findOne({
-          _id:
-            req.params.bookingId,
-
-          vendor:
-            vendorId,
-        });
-
-
-      if (!booking) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Booking not found.",
-        });
-      }
-
-
-      if (
-        booking.bookingStatus !==
-        "CONFIRMED"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Only confirmed bookings can be checked in.",
-        });
-      }
-
-
-      booking.bookingStatus =
-        "CHECKED_IN";
-
-      booking.actualCheckInAt =
-        new Date();
-
-      booking.checkInBy =
-        vendorId.toString();
-
-
-      await booking.save();
-
-
-      return res.status(200).json({
-        success: true,
-
-        message:
-          "Guest checked in successfully.",
-
-        booking,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Check In Error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Failed to check in guest.",
-
-        error:
-          error.message,
-      });
+exports.completeBooking = async (req, res) => {
+  try {
+    const { booking } = await findVendorBooking(req);
+    if (booking.bookingStatus !== "CHECKED_OUT") {
+      throw httpError(400, "Only checked-out bookings can be completed.");
     }
-  };
-
-
-/* ============================================================
-   CHECK-OUT
-============================================================ */
-
-exports.checkOut =
-  async (
-    req,
-    res
-  ) => {
-    try {
-
-      const vendorId =
-        req.vendor?._id;
-
-
-      if (!vendorId) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "Vendor authentication required.",
-        });
-      }
-
-
-      const booking =
-        await HomestayBooking.findOne({
-          _id:
-            req.params.bookingId,
-
-          vendor:
-            vendorId,
-        });
-
-
-      if (!booking) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Booking not found.",
-        });
-      }
-
-
-      if (
-        booking.bookingStatus !==
-        "CHECKED_IN"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Guest must be checked in before checkout.",
-        });
-      }
-
-
-      booking.bookingStatus =
-        "CHECKED_OUT";
-
-      booking.actualCheckOutAt =
-        new Date();
-
-      booking.checkOutBy =
-        vendorId.toString();
-
-
-      await booking.save();
-
-
-      return res.status(200).json({
-        success: true,
-
-        message:
-          "Guest checked out successfully.",
-
-        booking,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Check Out Error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Failed to check out guest.",
-
-        error:
-          error.message,
-      });
-    }
-  };
-
-
-/* ============================================================
-   MARK COMPLETED
-============================================================ */
-
-exports.completeBooking =
-  async (
-    req,
-    res
-  ) => {
-    try {
-
-      const vendorId =
-        req.vendor?._id;
-
-
-      if (!vendorId) {
-        return res.status(401).json({
-          success: false,
-          message:
-            "Vendor authentication required.",
-        });
-      }
-
-
-      const booking =
-        await HomestayBooking.findOne({
-          _id:
-            req.params.bookingId,
-
-          vendor:
-            vendorId,
-        });
-
-
-      if (!booking) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Booking not found.",
-        });
-      }
-
-
-      if (
-        booking.bookingStatus !==
-        "CHECKED_OUT"
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Only checked-out bookings can be completed.",
-        });
-      }
-
-
-      booking.bookingStatus =
-        "COMPLETED";
-
-
-      await booking.save();
-
-
-      return res.status(200).json({
-        success: true,
-
-        message:
-          "Booking completed successfully.",
-
-        booking,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Complete Booking Error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "Failed to complete booking.",
-
-        error:
-          error.message,
-      });
-    }
-  };
+    booking.bookingStatus = "COMPLETED";
+    await booking.save();
+    return res.status(200).json({ success: true, message: "Booking completed successfully.", booking });
+  } catch (err) {
+    return sendError(res, err, "Failed to complete booking.", "Complete Booking Error");
+  }
+};

@@ -1334,3 +1334,339 @@ exports.getStats = async (req, res) => {
     return sendError(res, error, "Resort Booking Stats Error");
   }
 };
+
+
+/* ==========================================================
+   CUSTOMER: HELPER TO RESOLVE RESORT OWNER
+========================================================== */
+
+const prepareCustomerStay = async (body) => {
+  const bookingInput = {
+    ...body,
+    resortId: body.resortId || body.resort,
+    roomCategoryId: body.roomCategoryId || body.roomCategory,
+    ratePlanId: body.ratePlanId || body.ratePlan,
+  };
+
+  if (!isId(bookingInput.resortId)) {
+    throw new HttpError(400, "Valid resortId is required.");
+  }
+
+  const resort = await Resort.findById(bookingInput.resortId)
+    .select("vendor");
+
+  if (!resort) {
+    throw new HttpError(404, "Resort not found.");
+  }
+
+  // Owner is always taken from the database, not request body.
+  const stay = await prepareStay(resort.vendor, bookingInput);
+
+  return { stay, vendorId: resort.vendor };
+};
+
+
+/* ==========================================================
+   CUSTOMER: GET PRICE QUOTE
+========================================================== */
+
+exports.customerGetQuote = async (req, res) => {
+  try {
+    const { stay } = await prepareCustomerStay(req.body);
+
+    return res.status(200).json({
+      success: true,
+      quote: {
+        totalNights: stay.totalNights,
+        rooms: stay.safeRooms,
+        adults: stay.safeAdults,
+        children: stay.safeChildren,
+        extraAdults: stay.extraAdults,
+        extraChildren: stay.extraChildren,
+        roomsLeft: stay.minAvailable,
+        nightly: stay.nightly,
+        pricing: stay.pricing,
+      },
+    });
+  } catch (error) {
+    return sendError(res, error, "Customer Resort Quote Error");
+  }
+};
+
+
+/* ==========================================================
+   CUSTOMER: CREATE BOOKING
+========================================================== */
+
+exports.customerCreateBooking = async (req, res) => {
+  let reservedDates = [];
+  let inventoryCtx = null;
+  let reservedRooms = 0;
+
+  try {
+    const {
+      leadGuest,
+      additionalGuests = [],
+      specialRequest = "",
+    } = req.body;
+
+    validateGuest(leadGuest, "Lead guest");
+
+    if (!Array.isArray(additionalGuests)) {
+      throw new HttpError(400, "Additional guests must be a list.");
+    }
+
+    additionalGuests.forEach((guest, index) =>
+      validateGuest(guest, `Additional guest ${index + 1}`)
+    );
+
+    const { stay, vendorId } = await prepareCustomerStay(req.body);
+
+    inventoryCtx = {
+      vendor: vendorId,
+      resort: stay.resort._id,
+      roomCategory: stay.roomCategory._id,
+    };
+
+    reservedRooms = stay.safeRooms;
+
+    reservedDates = await reserveDates(
+      inventoryCtx,
+      stay.stayDates,
+      stay.safeRooms
+    );
+
+    const booking = await ResortBooking.create({
+      bookingId: generateBookingId(),
+
+      customer: req.user._id,
+      vendor: vendorId,
+      resort: stay.resort._id,
+      roomCategory: stay.roomCategory._id,
+      ratePlan: stay.ratePlan._id,
+
+      checkIn: stay.checkInDate,
+      checkOut: stay.checkOutDate,
+      totalNights: stay.totalNights,
+
+      rooms: stay.safeRooms,
+      adults: stay.safeAdults,
+      children: stay.safeChildren,
+
+      leadGuest: cleanGuest(leadGuest),
+      additionalGuests: additionalGuests.map(cleanGuest),
+
+      pricing: stay.pricing,
+
+      bookingStatus: "PENDING",
+      paymentStatus: "PENDING",
+      paymentMethod: "ONLINE",
+      paidAmount: 0,
+      payments: [],
+
+      bookingSource: "WEBSITE",
+      specialRequest: String(specialRequest || "").trim(),
+      internalNotes: "",
+    });
+
+    const result = await populateBooking(
+      ResortBooking.findById(booking._id)
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Booking created successfully. Awaiting confirmation/payment.",
+      booking: result,
+    });
+  } catch (error) {
+    if (reservedDates.length && inventoryCtx) {
+      try {
+        await releaseDates(
+          inventoryCtx,
+          reservedDates,
+          reservedRooms
+        );
+      } catch (rollbackError) {
+        console.error("Customer booking inventory rollback failed:", rollbackError);
+      }
+    }
+
+    return sendError(res, error, "Customer Create Booking Error");
+  }
+};
+
+
+/* ==========================================================
+   CUSTOMER: GET MY BOOKINGS
+========================================================== */
+
+exports.customerGetBookings = async (req, res) => {
+  try {
+    const bookings = await populateBooking(
+      ResortBooking.find({ customer: req.user._id })
+        .sort({ createdAt: -1 })
+    );
+
+    return res.status(200).json({
+      success: true,
+      total: bookings.length,
+      bookings,
+    });
+  } catch (error) {
+    return sendError(res, error, "Customer Get Bookings Error");
+  }
+};
+
+
+/* ==========================================================
+   CUSTOMER: GET MY BOOKING BY ID
+========================================================== */
+
+exports.customerGetBookingById = async (req, res) => {
+  try {
+    if (!isId(req.params.id)) {
+      throw new HttpError(400, "Invalid booking ID.");
+    }
+
+    const booking = await populateBooking(
+      ResortBooking.findOne({
+        _id: req.params.id,
+        customer: req.user._id,
+      })
+    );
+
+    if (!booking) {
+      throw new HttpError(404, "Booking not found.");
+    }
+
+    return res.status(200).json({
+      success: true,
+      booking,
+    });
+  } catch (error) {
+    return sendError(res, error, "Customer Get Booking Error");
+  }
+};
+
+
+/* ==========================================================
+   CUSTOMER: UPDATE GUEST DETAILS
+========================================================== */
+
+exports.customerUpdateBooking = async (req, res) => {
+  try {
+    if (!isId(req.params.id)) {
+      throw new HttpError(400, "Invalid booking ID.");
+    }
+
+    const booking = await ResortBooking.findOne({
+      _id: req.params.id,
+      customer: req.user._id,
+    });
+
+    if (!booking) {
+      throw new HttpError(404, "Booking not found.");
+    }
+
+    if (booking.bookingStatus !== "PENDING") {
+      throw new HttpError(
+        400,
+        "Only pending bookings can be edited."
+      );
+    }
+
+    const {
+      leadGuest,
+      additionalGuests,
+      specialRequest,
+    } = req.body;
+
+    if (leadGuest !== undefined) {
+      validateGuest(leadGuest, "Lead guest");
+      booking.leadGuest = cleanGuest(leadGuest);
+    }
+
+    if (additionalGuests !== undefined) {
+      if (!Array.isArray(additionalGuests)) {
+        throw new HttpError(400, "Additional guests must be a list.");
+      }
+
+      additionalGuests.forEach((guest, index) =>
+        validateGuest(guest, `Additional guest ${index + 1}`)
+      );
+
+      booking.additionalGuests = additionalGuests.map(cleanGuest);
+    }
+
+    if (specialRequest !== undefined) {
+      booking.specialRequest = String(specialRequest || "").trim();
+    }
+
+    // Customer cannot change vendor, price, dates, status or payment.
+    await booking.save();
+
+    const result = await populateBooking(
+      ResortBooking.findById(booking._id)
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Booking details updated successfully.",
+      booking: result,
+    });
+  } catch (error) {
+    return sendError(res, error, "Customer Update Booking Error");
+  }
+};
+
+
+/* ==========================================================
+   CUSTOMER: CANCEL BOOKING
+   DELETE endpoint performs a cancellation, not hard delete.
+========================================================== */
+
+exports.customerCancelBooking = async (req, res) => {
+  try {
+    if (!isId(req.params.id)) {
+      throw new HttpError(400, "Invalid booking ID.");
+    }
+
+    const booking = await ResortBooking.findOne({
+      _id: req.params.id,
+      customer: req.user._id,
+    });
+
+    if (!booking) {
+      throw new HttpError(404, "Booking not found.");
+    }
+
+    if (booking.bookingStatus !== "PENDING") {
+      throw new HttpError(
+        400,
+        "Only pending bookings can be cancelled by the customer."
+      );
+    }
+
+    if (!booking.inventoryReleased) {
+      await releaseBookingInventory(booking);
+      booking.inventoryReleased = true;
+    }
+
+    booking.bookingStatus = "CANCELLED";
+    booking.cancelledAt = new Date();
+    booking.cancelledBy = "USER";
+    booking.cancellationReason = String(
+      req.body?.cancellationReason || "Cancelled by customer"
+    ).trim();
+
+    await booking.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Booking cancelled successfully.",
+      booking,
+    });
+  } catch (error) {
+    return sendError(res, error, "Customer Cancel Booking Error");
+  }
+};

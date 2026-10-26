@@ -1,384 +1,100 @@
-// models/HomestayInventory.model.js
-
 const mongoose = require("mongoose");
+const { getDayType, round } = require("../utils/Homestayhelpers");
 
-/* ============================================================
-   HOMESTAY INVENTORY MODEL
 
-   One document = One Unit + One Date
-
-   Example:
-
-   Deluxe Mountain Room
-   15 Aug 2026
-   totalUnits     = 3
-   availableUnits = 2
-   bookedUnits    = 1
-============================================================ */
+const num = (extra = {}) => ({ type: Number, default: 0, min: 0, ...extra });
 
 const homestayInventorySchema = new mongoose.Schema(
   {
-    /* ==========================================================
-       RELATIONS
-    ========================================================== */
+    homestay: { type: mongoose.Schema.Types.ObjectId, ref: "Homestay", required: true, index: true },
+    // NOTE: ref name wahi hona chahiye jo Homestayroom.model.js me mongoose.model("...") me diya hai
+    room: { type: mongoose.Schema.Types.ObjectId, ref: "HomestayRoom", required: true, index: true },
+    vendor: { type: mongoose.Schema.Types.ObjectId, ref: "Vendor", required: true, index: true },
 
-    homestay: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Homestay",
-      required: true,
-      index: true,
-    },
+    date: { type: Date, required: true, index: true },
 
-    unit: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "HomestayUnit",
-      required: true,
-      index: true,
-    },
+    /* units */
+    totalUnits: { type: Number, required: true, min: 0 },
+    availableUnits: num(),
+    bookedUnits: num(),
+    blockedUnits: num(),
 
-    vendor: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Vendor",
-      required: true,
-      index: true,
-    },
+    /* prices (vendor input) */
+    basePrice: num(),
+    weekendPrice: num(),
+    holidayPrice: num(),
+    specialPrice: num(),
+    extraGuestPrice: num(),
 
+    /* auto-calculated */
+    appliedPrice: num(), // is date par lagne wali price (discount se pehle)
+    finalPrice: num(), // discount ke baad, per night per unit
 
-    /* ==========================================================
-       DATE
-    ========================================================== */
+    discountType: { type: String, enum: ["none", "percentage", "flat"], default: "none" },
+    discountValue: num(),
 
-    date: {
-      type: Date,
-      required: true,
-      index: true,
-    },
+    taxPercentage: num({ max: 100 }),
+    taxAmount: num(),
+    serviceChargePercentage: num({ max: 100 }),
+    serviceChargeAmount: num(),
 
+    dayType: { type: String, enum: ["weekday", "weekend", "holiday"], default: "weekday" },
+    isHoliday: { type: Boolean, default: false },
 
-    /* ==========================================================
-       INVENTORY
-    ========================================================== */
+    /* availability */
+    isAvailable: { type: Boolean, default: true, index: true },
+    isBlocked: { type: Boolean, default: false },
+    blockReason: { type: String, default: "", trim: true },
+    stopSell: { type: Boolean, default: false },
+    closedForBooking: { type: Boolean, default: false },
 
-    totalUnits: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
+    /* stay rules */
+    minimumStay: { type: Number, default: 1, min: 1 },
+    maximumStay: { type: Number, default: 0, min: 0 }, // 0 = unlimited
+    checkInAllowed: { type: Boolean, default: true },
+    checkOutAllowed: { type: Boolean, default: true },
 
-    availableUnits: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
+    totalBookings: num(),
 
-    bookedUnits: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    blockedUnits: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-
-    /* ==========================================================
-       PRICING
-    ========================================================== */
-
-    basePrice: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
-
-    weekendPrice: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    holidayPrice: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    specialPrice: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    extraGuestPrice: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-
-    /* ==========================================================
-       DISCOUNT
-    ========================================================== */
-
-    discountType: {
-      type: String,
-      enum: [
-        "none",
-        "percentage",
-        "flat",
-      ],
-      default: "none",
-    },
-
-    discountValue: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    finalPrice: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-
-    /* ==========================================================
-       TAX
-    ========================================================== */
-
-    taxPercentage: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 100,
-    },
-
-    taxAmount: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    serviceChargePercentage: {
-      type: Number,
-      default: 0,
-      min: 0,
-      max: 100,
-    },
-
-    serviceChargeAmount: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-
-    /* ==========================================================
-       DAY TYPE
-    ========================================================== */
-
-    dayType: {
-      type: String,
-      enum: [
-        "weekday",
-        "weekend",
-        "holiday",
-      ],
-      default: "weekday",
-    },
-
-
-    /* ==========================================================
-       AVAILABILITY
-    ========================================================== */
-
-    isAvailable: {
-      type: Boolean,
-      default: true,
-      index: true,
-    },
-
-    isBlocked: {
-      type: Boolean,
-      default: false,
-    },
-
-    blockReason: {
-      type: String,
-      default: "",
-      trim: true,
-    },
-
-
-    /* ==========================================================
-       MINIMUM / MAXIMUM STAY
-    ========================================================== */
-
-    minimumStay: {
-      type: Number,
-      default: 1,
-      min: 1,
-    },
-
-    maximumStay: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-
-    /* ==========================================================
-       CHECK-IN / CHECK-OUT RESTRICTIONS
-    ========================================================== */
-
-    checkInAllowed: {
-      type: Boolean,
-      default: true,
-    },
-
-    checkOutAllowed: {
-      type: Boolean,
-      default: true,
-    },
-
-
-    /* ==========================================================
-       BOOKING RESTRICTIONS
-    ========================================================== */
-
-    stopSell: {
-      type: Boolean,
-      default: false,
-    },
-
-    closedForBooking: {
-      type: Boolean,
-      default: false,
-    },
-
-
-    /* ==========================================================
-       BOOKING COUNTER
-    ========================================================== */
-
-    totalBookings: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-
-    /* ==========================================================
-       LAST UPDATE
-    ========================================================== */
-
-    lastUpdatedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Vendor",
-      default: null,
-    },
-
-    lastUpdatedAt: {
-      type: Date,
-      default: Date.now,
-    },
+    lastUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Vendor", default: null },
+    lastUpdatedAt: { type: Date, default: Date.now },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
+/* Ek room ki ek date ka sirf ek record */
+homestayInventorySchema.index({ room: 1, date: 1 }, { unique: true });
+homestayInventorySchema.index({ homestay: 1, date: 1 });
+homestayInventorySchema.index({ vendor: 1, date: 1 });
 
-/* ============================================================
-   IMPORTANT UNIQUE INDEX
+/* Price + units + availability ek hi jagah calculate hote hain */
+homestayInventorySchema.methods.recalculate = function () {
+  this.dayType = this.isHoliday ? "holiday" : getDayType(this.date);
 
-   Same unit cannot have duplicate inventory for same date.
-============================================================ */
+  let price = this.basePrice || 0;
+  if (this.dayType === "weekend" && this.weekendPrice > 0) price = this.weekendPrice;
+  if (this.dayType === "holiday" && this.holidayPrice > 0) price = this.holidayPrice;
+  if (this.specialPrice > 0) price = this.specialPrice;
+  this.appliedPrice = price;
 
-homestayInventorySchema.index(
-  {
-    unit: 1,
-    date: 1,
-  },
-  {
-    unique: true,
-  }
-);
+  let discount = 0;
+  if (this.discountType === "percentage") discount = (price * Math.min(this.discountValue, 100)) / 100;
+  if (this.discountType === "flat") discount = Math.min(this.discountValue, price);
 
+  this.finalPrice = round(Math.max(price - discount, 0));
+  this.taxAmount = round((this.finalPrice * this.taxPercentage) / 100);
+  this.serviceChargeAmount = round((this.finalPrice * this.serviceChargePercentage) / 100);
 
-/* ============================================================
-   SEARCH INDEXES
-============================================================ */
+  this.availableUnits = Math.max(this.totalUnits - this.bookedUnits - this.blockedUnits, 0);
+  this.isAvailable =
+    this.availableUnits > 0 && !this.isBlocked && !this.stopSell && !this.closedForBooking;
 
-homestayInventorySchema.index({
-  homestay: 1,
-  date: 1,
+  this.lastUpdatedAt = new Date();
+};
+
+// (purane code me `next` call hi nahi hota tha, isliye save() hang ho jata tha)
+homestayInventorySchema.pre("save", function () {
+  this.recalculate();
 });
 
-homestayInventorySchema.index({
-  vendor: 1,
-  date: 1,
-});
-
-homestayInventorySchema.index({
-  unit: 1,
-  date: 1,
-  isAvailable: 1,
-});
-
-
-/* ============================================================
-   PRE-SAVE INVENTORY VALIDATION
-============================================================ */
-
-homestayInventorySchema.pre(
-  "save",
-  function (next) {
-    const calculatedAvailable =
-      this.totalUnits -
-      this.bookedUnits -
-      this.blockedUnits;
-
-    this.availableUnits =
-      Math.max(
-        calculatedAvailable,
-        0
-      );
-
-    if (
-      this.availableUnits <= 0
-    ) {
-      this.isAvailable = false;
-    } else {
-      this.isAvailable = true;
-    }
-
-    if (
-      this.isBlocked ||
-      this.stopSell ||
-      this.closedForBooking
-    ) {
-      this.isAvailable = false;
-    }
-
-    this.lastUpdatedAt =
-      new Date();
-
-    
-  }
-);
-
-
-/* ============================================================
-   EXPORT
-============================================================ */
-
-module.exports =
-  mongoose.model(
-    "HomestayInventory",
-    homestayInventorySchema
-  );
+module.exports = mongoose.model("HomestayInventory", homestayInventorySchema);

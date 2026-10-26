@@ -1,185 +1,43 @@
 // routes/homestayBooking.routes.js
-
 const express = require("express");
-
 const router = express.Router();
 
-const protect = require("../middleware/auth.middleware");
+const protect = require("../middleware/auth.middleware"); // VENDOR auth  -> req.vendor
+// USER auth -> req.user.  File ka naam/path apne project ke hisaab se badlo
+const userAuth = require("../middleware/userAuth.middleware");
 
 const {
+  checkAvailability,
   createBooking,
-
   getMyBookings,
   getMyBookingById,
-
+  cancelBooking,
   getVendorBookings,
   getVendorBookingById,
-
   confirmBooking,
   rejectBooking,
-
-  cancelBooking,
-
   checkIn,
   checkOut,
-
   completeBooking,
 } = require("../controllers/homestayBooking.controller");
 
+/* ---------- PUBLIC ---------- */
+// GET /api/homestay-bookings/availability?roomId=&checkInDate=&checkOutDate=&unitsBooked=&adults=&children=
+router.get("/availability", checkAvailability);
 
-/* ============================================================
-   USER / CUSTOMER BOOKING
-============================================================ */
+/* ---------- USER ---------- */
+router.post("/", userAuth, createBooking);
+router.get("/my-bookings", userAuth, getMyBookings);
+router.get("/my-bookings/:bookingId", userAuth, getMyBookingById);
+router.put("/:bookingId/cancel", userAuth, cancelBooking);
 
-/*
-   Create Homestay Booking
-
-   POST
-   /api/homestay-bookings
-*/
-router.post(
-  "/",
-  protect,
-  createBooking
-);
-
-
-/*
-   Get My Bookings
-
-   GET
-   /api/homestay-bookings/my-bookings
-*/
-router.get(
-  "/my-bookings",
-  protect,
-  getMyBookings
-);
-
-
-/*
-   Get Single My Booking
-
-   GET
-   /api/homestay-bookings/my-bookings/:bookingId
-*/
-router.get(
-  "/my-bookings/:bookingId",
-  protect,
-  getMyBookingById
-);
-
-
-/*
-   Cancel Booking
-
-   PUT
-   /api/homestay-bookings/:bookingId/cancel
-*/
-router.put(
-  "/:bookingId/cancel",
-  protect,
-  cancelBooking
-);
-
-
-/* ============================================================
-   VENDOR BOOKING MANAGEMENT
-============================================================ */
-
-/*
-   Get Vendor Bookings
-
-   GET
-   /api/homestay-bookings/vendor
-*/
-router.get(
-  "/vendor",
-  protect,
-  getVendorBookings
-);
-
-
-/*
-   Get Vendor Single Booking
-
-   GET
-   /api/homestay-bookings/vendor/:bookingId
-*/
-router.get(
-  "/vendor/:bookingId",
-  protect,
-  getVendorBookingById
-);
-
-
-/*
-   Confirm Booking
-
-   PUT
-   /api/homestay-bookings/vendor/:bookingId/confirm
-*/
-router.put(
-  "/vendor/:bookingId/confirm",
-  protect,
-  confirmBooking
-);
-
-
-/*
-   Reject Booking
-
-   PUT
-   /api/homestay-bookings/vendor/:bookingId/reject
-*/
-router.put(
-  "/vendor/:bookingId/reject",
-  protect,
-  rejectBooking
-);
-
-
-/*
-   Check-In Guest
-
-   PUT
-   /api/homestay-bookings/vendor/:bookingId/check-in
-*/
-router.put(
-  "/vendor/:bookingId/check-in",
-  protect,
-  checkIn
-);
-
-
-/*
-   Check-Out Guest
-
-   PUT
-   /api/homestay-bookings/vendor/:bookingId/check-out
-*/
-router.put(
-  "/vendor/:bookingId/check-out",
-  protect,
-  checkOut
-);
-
-
-/*
-   Complete Booking
-
-   PUT
-   /api/homestay-bookings/vendor/:bookingId/complete
-*/
-router.put(
-  "/vendor/:bookingId/complete",
-  protect,
-  completeBooking
-);
-
-
-/* ============================================================
-   EXPORT
-============================================================ */
+/* ---------- VENDOR ---------- */
+router.get("/vendor", protect, getVendorBookings);
+router.get("/vendor/:bookingId", protect, getVendorBookingById);
+router.put("/vendor/:bookingId/confirm", protect, confirmBooking);
+router.put("/vendor/:bookingId/reject", protect, rejectBooking);
+router.put("/vendor/:bookingId/check-in", protect, checkIn);
+router.put("/vendor/:bookingId/check-out", protect, checkOut);
+router.put("/vendor/:bookingId/complete", protect, completeBooking);
 
 module.exports = router;

@@ -1,10 +1,8 @@
-// routes/HotelRoom.routes.js
-
 const express = require("express");
-
 const router = express.Router();
 
 const protect = require("../middleware/auth.middleware");
+const upload = require("../utils/upload"); // same multer util jo hotel routes me use ho raha hai
 
 const {
   createRoom,
@@ -17,104 +15,32 @@ const {
   deleteRoomImage,
 } = require("../controllers/HotelRoom.controller");
 
-
-/* ============================================================
-   ALL ROUTES REQUIRE VENDOR AUTHENTICATION
-============================================================ */
-
 router.use(protect);
 
+const roomImages = upload.fields([{ name: "images", maxCount: 10 }]);
 
-/* ============================================================
-   CREATE ROOM
-   POST /api/hotel-rooms
-============================================================ */
+// POST /api/hotel-rooms
+router.post("/", roomImages, createRoom);
 
-router.post(
-  "/",
-  createRoom
-);
+// GET /api/hotel-rooms/hotel/:hotelId   (":roomId" se pehle rakhna zaruri hai)
+router.get("/hotel/:hotelId", getHotelRooms);
 
+// GET /api/hotel-rooms/:roomId
+router.get("/:roomId", getRoomById);
 
-/* ============================================================
-   GET ALL ROOMS OF A HOTEL
-   GET /api/hotel-rooms/hotel/:hotelId
-============================================================ */
+// PUT /api/hotel-rooms/:roomId
+router.put("/:roomId", roomImages, updateRoom);
 
-router.get(
-  "/hotel/:hotelId",
-  getHotelRooms
-);
+// DELETE /api/hotel-rooms/:roomId
+router.delete("/:roomId", deleteRoom);
 
+// PUT /api/hotel-rooms/:roomId/status
+router.put("/:roomId/status", updateRoomStatus);
 
-/* ============================================================
-   GET SINGLE ROOM
-   GET /api/hotel-rooms/:roomId
-============================================================ */
+// PUT /api/hotel-rooms/:roomId/inventory
+router.put("/:roomId/inventory", updateRoomInventory);
 
-router.get(
-  "/:roomId",
-  getRoomById
-);
-
-
-/* ============================================================
-   UPDATE ROOM
-   PUT /api/hotel-rooms/:roomId
-============================================================ */
-
-router.put(
-  "/:roomId",
-  updateRoom
-);
-
-
-/* ============================================================
-   DELETE ROOM
-   DELETE /api/hotel-rooms/:roomId
-============================================================ */
-
-router.delete(
-  "/:roomId",
-  deleteRoom
-);
-
-
-/* ============================================================
-   UPDATE ROOM STATUS
-   PUT /api/hotel-rooms/:roomId/status
-============================================================ */
-
-router.put(
-  "/:roomId/status",
-  updateRoomStatus
-);
-
-
-/* ============================================================
-   UPDATE ROOM INVENTORY
-   PUT /api/hotel-rooms/:roomId/inventory
-============================================================ */
-
-router.put(
-  "/:roomId/inventory",
-  updateRoomInventory
-);
-
-
-/* ============================================================
-   DELETE ROOM IMAGE
-   PUT /api/hotel-rooms/:roomId/images/delete
-============================================================ */
-
-router.put(
-  "/:roomId/images/delete",
-  deleteRoomImage
-);
-
-
-/* ============================================================
-   EXPORT
-============================================================ */
+// PUT /api/hotel-rooms/:roomId/images/delete
+router.put("/:roomId/images/delete", deleteRoomImage);
 
 module.exports = router;

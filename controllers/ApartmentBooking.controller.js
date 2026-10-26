@@ -719,3 +719,95 @@ exports.getBookingById = async (
     });
   }
 };
+
+/* =====================================================
+   UPDATE VENDOR BOOKING STATUS
+   PATCH /api/apartment-bookings/vendor/:id/status
+===================================================== */
+
+exports.updateVendorBookingStatus = async (req, res) => {
+  try {
+    const vendorId = req.vendor?._id;
+
+    if (!vendorId) {
+      return res.status(401).json({
+        success: false,
+        message: "Vendor authentication required.",
+      });
+    }
+
+    const { status } = req.body;
+    const allowedStatuses = [
+      "CONFIRMED",
+      "COMPLETED",
+      "CANCELLED",
+      "NO_SHOW",
+    ];
+
+    const nextStatus = String(status || "").toUpperCase();
+
+    if (!allowedStatuses.includes(nextStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking status.",
+        allowedStatuses,
+      });
+    }
+
+    const booking = await ApartmentBooking.findOne({
+      _id: req.params.id,
+      vendor: vendorId,
+    });
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found for this vendor.",
+      });
+    }
+
+    if (
+      booking.bookingStatus === "CANCELLED" ||
+      booking.bookingStatus === "COMPLETED"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: `Booking is already ${booking.bookingStatus.toLowerCase()}.`,
+      });
+    }
+
+    if (nextStatus === "COMPLETED") {
+      if (new Date(booking.checkOutDate) > new Date()) {
+        return res.status(400).json({
+          success: false,
+          message: "Booking cannot be completed before check-out.",
+        });
+      }
+
+      booking.checkedOutAt = new Date();
+    }
+
+    if (nextStatus === "CANCELLED") {
+      booking.cancelledBy = "VENDOR";
+      booking.cancelledAt = new Date();
+      booking.cancellationReason =
+        req.body.reason || "Cancelled by vendor";
+    }
+
+    booking.bookingStatus = nextStatus;
+    await booking.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Booking status updated to ${nextStatus}.`,
+      data: booking,
+    });
+  } catch (error) {
+    console.error("UPDATE APARTMENT BOOKING STATUS:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Unable to update booking status.",
+    });
+  }
+};

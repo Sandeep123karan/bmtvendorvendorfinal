@@ -2,7 +2,7 @@
 
 const router  = require("express").Router();
 const protect = require("../middleware/auth.middleware");
-const upload  = require("../utils/upload");
+const { upload } = require("../middleware/upload");
 
 const {
   addHotel,

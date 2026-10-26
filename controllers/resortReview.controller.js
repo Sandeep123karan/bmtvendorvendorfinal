@@ -1,9 +1,88 @@
+
+const mongoose = require("mongoose");
+
 const ResortBooking = require("../models/ResortBooking.model");
 const ResortReview = require("../models/ResortReview.model");
+const Resort = require("../models/Resort.model");
 
+const REVIEW_STATUSES = ["PENDING", "APPROVED", "REJECTED", "HIDDEN"];
+
+const isValidId = (id) =>
+  mongoose.Types.ObjectId.isValid(String(id || ""));
+
+const isValidRating = (value) =>
+  Number.isInteger(Number(value)) &&
+  Number(value) >= 1 &&
+  Number(value) <= 5;
+
+const validateOptionalRatings = (ratings = {}) => {
+  const keys = [
+    "cleanliness",
+    "service",
+    "location",
+    "valueForMoney",
+    "roomQuality",
+    "food",
+  ];
+
+  const result = {};
+
+  for (const key of keys) {
+    const value = ratings[key];
+
+    if (value === undefined || value === null || value === "") {
+      result[key] = null;
+      continue;
+    }
+
+    if (!isValidRating(value)) {
+      throw new Error(`${key} rating must be an integer from 1 to 5.`);
+    }
+
+    result[key] = Number(value);
+  }
+
+  return result;
+};
+
+const cleanStringArray = (value, fieldName) => {
+  if (value === undefined || value === null) return [];
+
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array.`);
+  }
+
+  return value
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+};
+
+const sendError = (res, error, label) => {
+  console.error(`${label}:`, error);
+
+  if (error.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      message: "A review already exists for this booking.",
+    });
+  }
+
+  if (error.name === "ValidationError") {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    message: "Something went wrong while processing the review.",
+  });
+};
 
 /* ==========================================================
-                    CREATE REVIEW
+   CUSTOMER: CREATE REVIEW
+   POST /
 ========================================================== */
 
 exports.createReview = async (req, res) => {
@@ -11,43 +90,77 @@ exports.createReview = async (req, res) => {
     const {
       bookingId,
       rating,
-      ratings,
-      title,
+      ratings = {},
+      title = "",
       comment,
-      pros,
-      cons,
+      pros = [],
+      cons = [],
       images = [],
-    } = req.body;
+    } = req.body || {};
 
-
-    // ==========================================
-    // VALIDATION
-    // ==========================================
-
-    if (!bookingId || !rating || !comment) {
-      return res.status(400).json({
+    if (!req.user?._id) {
+      return res.status(401).json({
         success: false,
-        message:
-          "bookingId, rating and comment are required.",
+        message: "Please log in as a customer.",
       });
     }
 
-
-    if (Number(rating) < 1 || Number(rating) > 5) {
+    if (!bookingId || !isValidId(bookingId)) {
       return res.status(400).json({
         success: false,
-        message: "Rating must be between 1 and 5.",
+        message: "A valid bookingId is required.",
       });
     }
 
+    if (!isValidRating(rating)) {
+      return res.status(400).json({
+        success: false,
+        message: "Rating must be an integer from 1 to 5.",
+      });
+    }
 
-    // ==========================================
-    // CHECK BOOKING
-    // ==========================================
+    if (typeof comment !== "string" || !comment.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Review comment is required.",
+      });
+    }
 
-    const booking = await ResortBooking.findById(
-      bookingId
-    );
+    if (comment.trim().length > 2000) {
+      return res.status(400).json({
+        success: false,
+        message: "Comment cannot exceed 2000 characters.",
+      });
+    }
+
+    if (typeof title !== "string" || title.trim().length > 150) {
+      return res.status(400).json({
+        success: false,
+        message: "Title must be a string of up to 150 characters.",
+      });
+    }
+
+    if (!Array.isArray(images) || images.length > 10) {
+      return res.status(400).json({
+        success: false,
+        message: "Images must be an array with at most 10 items.",
+      });
+    }
+
+    for (const image of images) {
+      if (!image || typeof image.url !== "string" || !image.url.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Each image must include a valid URL.",
+        });
+      }
+    }
+
+    const cleanRatings = validateOptionalRatings(ratings);
+    const cleanPros = cleanStringArray(pros, "pros");
+    const cleanCons = cleanStringArray(cons, "cons");
+
+    const booking = await ResortBooking.findById(bookingId);
 
     if (!booking) {
       return res.status(404).json({
@@ -56,40 +169,41 @@ exports.createReview = async (req, res) => {
       });
     }
 
-
-    // ==========================================
-    // ONLY COMPLETED STAY CAN REVIEW
-    // ==========================================
+    // Only the customer who owns this booking can review it.
+    if (
+      !booking.customer ||
+      String(booking.customer) !== String(req.user._id)
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only review your own booking.",
+      });
+    }
 
     if (booking.bookingStatus !== "CHECKED_OUT") {
       return res.status(400).json({
         success: false,
-        message:
-          "Review can only be submitted after check-out.",
+        message: "A review can only be submitted after check-out.",
       });
     }
-
-
-    // ==========================================
-    // CHECK DUPLICATE REVIEW
-    // ==========================================
 
     const existingReview = await ResortReview.findOne({
-      booking: bookingId,
-    });
+      booking: booking._id,
+    }).lean();
 
     if (existingReview) {
-      return res.status(400).json({
+      return res.status(409).json({
         success: false,
-        message:
-          "Review has already been submitted for this booking.",
+        message: "A review has already been submitted for this booking.",
       });
     }
 
-
-    // ==========================================
-    // CREATE REVIEW
-    // ==========================================
+    if (!booking.leadGuest?.name || !booking.leadGuest?.phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Booking guest details are incomplete.",
+      });
+    }
 
     const review = await ResortReview.create({
       resort: booking.resort,
@@ -103,136 +217,151 @@ exports.createReview = async (req, res) => {
       },
 
       rating: Number(rating),
+      ratings: cleanRatings,
 
-      ratings: {
-        cleanliness: ratings?.cleanliness || null,
-        service: ratings?.service || null,
-        location: ratings?.location || null,
-        valueForMoney: ratings?.valueForMoney || null,
-        roomQuality: ratings?.roomQuality || null,
-        food: ratings?.food || null,
-      },
-
-      title: title || "",
-      comment,
-
-      pros: Array.isArray(pros) ? pros : [],
-      cons: Array.isArray(cons) ? cons : [],
-      images: Array.isArray(images) ? images : [],
+      title: title.trim(),
+      comment: comment.trim(),
+      pros: cleanPros,
+      cons: cleanCons,
+      images: images.map((image) => ({
+        url: image.url.trim(),
+        publicId: String(image.publicId || "").trim(),
+      })),
 
       status: "PENDING",
       isVerifiedStay: true,
+      isActive: true,
     });
-
 
     return res.status(201).json({
       success: true,
-      message: "Review submitted successfully.",
+      message: "Review submitted successfully and is awaiting approval.",
       review,
     });
-
   } catch (error) {
-    console.error("Create Resort Review Error:", error);
-
-    if (error.code === 11000) {
+    if (error.message?.includes("rating must be")) {
       return res.status(400).json({
         success: false,
-        message:
-          "Review already exists for this booking.",
+        message: error.message,
       });
     }
 
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    if (
+      error.message?.includes("must be an array") ||
+      error.message?.includes("must be an integer")
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    return sendError(res, error, "Create Resort Review Error");
   }
 };
 
-
 /* ==========================================================
-                    GET VENDOR REVIEWS
+   VENDOR: GET REVIEW LIST
+   GET /?resortId=...&status=APPROVED&page=1&limit=20
 ========================================================== */
 
 exports.getVendorReviews = async (req, res) => {
   try {
+    if (!req.vendor?._id) {
+      return res.status(401).json({
+        success: false,
+        message: "Vendor authentication required.",
+      });
+    }
+
     const {
       resortId,
       status,
-      page = 1,
-      limit = 20,
+      page = "1",
+      limit = "20",
     } = req.query;
 
+    const safePage = Math.max(1, parseInt(page, 10) || 1);
+    const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
 
     const filter = {
       vendor: req.vendor._id,
     };
 
-
     if (resortId) {
+      if (!isValidId(resortId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid resortId.",
+        });
+      }
+
       filter.resort = resortId;
     }
 
-
     if (status) {
-      filter.status = status;
+      const safeStatus = String(status).toUpperCase();
+
+      if (!REVIEW_STATUSES.includes(safeStatus)) {
+        return res.status(400).json({
+          success: false,
+          message: `Status must be one of: ${REVIEW_STATUSES.join(", ")}.`,
+        });
+      }
+
+      filter.status = safeStatus;
     }
 
-
-    const skip =
-      (Number(page) - 1) * Number(limit);
-
+    const skip = (safePage - 1) * safeLimit;
 
     const [reviews, total] = await Promise.all([
       ResortReview.find(filter)
         .populate("resort", "name")
-        .populate(
-          "booking",
-          "bookingId checkIn checkOut bookingStatus"
-        )
+        .populate("booking", "bookingId checkIn checkOut bookingStatus")
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(Number(limit)),
+        .limit(safeLimit)
+        .lean(),
 
       ResortReview.countDocuments(filter),
     ]);
 
-
     return res.status(200).json({
       success: true,
       total,
-      page: Number(page),
-      limit: Number(limit),
+      page: safePage,
+      limit: safeLimit,
+      totalPages: Math.ceil(total / safeLimit),
       reviews,
     });
-
   } catch (error) {
-    console.error("Get Vendor Reviews Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error, "Get Vendor Reviews Error");
   }
 };
 
-
 /* ==========================================================
-                    GET SINGLE REVIEW
+   VENDOR: GET SINGLE REVIEW
+   GET /:id
 ========================================================== */
 
 exports.getReviewById = async (req, res) => {
   try {
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid review ID.",
+      });
+    }
+
     const review = await ResortReview.findOne({
       _id: req.params.id,
       vendor: req.vendor._id,
     })
-      .populate("resort", "name")
+      .populate("resort", "name address")
       .populate(
         "booking",
-        "bookingId checkIn checkOut roomCategory"
+        "bookingId checkIn checkOut bookingStatus roomCategory"
       );
-
 
     if (!review) {
       return res.status(404).json({
@@ -241,43 +370,49 @@ exports.getReviewById = async (req, res) => {
       });
     }
 
-
     return res.status(200).json({
       success: true,
       review,
     });
-
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error, "Get Resort Review Error");
   }
 };
 
-
 /* ==========================================================
-                    VENDOR REPLY TO REVIEW
+   VENDOR: REPLY TO REVIEW
+   PUT /:id/reply
 ========================================================== */
 
 exports.replyToReview = async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message } = req.body || {};
 
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid review ID.",
+      });
+    }
 
-    if (!message || !message.trim()) {
+    if (typeof message !== "string" || !message.trim()) {
       return res.status(400).json({
         success: false,
         message: "Reply message is required.",
       });
     }
 
+    if (message.trim().length > 2000) {
+      return res.status(400).json({
+        success: false,
+        message: "Reply cannot exceed 2000 characters.",
+      });
+    }
 
     const review = await ResortReview.findOne({
       _id: req.params.id,
       vendor: req.vendor._id,
     });
-
 
     if (!review) {
       return res.status(404).json({
@@ -286,130 +421,96 @@ exports.replyToReview = async (req, res) => {
       });
     }
 
+    if (!review.isActive || review.status === "HIDDEN") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot reply to an inactive or hidden review.",
+      });
+    }
 
     review.vendorReply = {
       message: message.trim(),
       repliedAt: new Date(),
     };
 
-
     await review.save();
-
 
     return res.status(200).json({
       success: true,
-      message: "Reply submitted successfully.",
+      message: "Vendor reply saved successfully.",
       review,
     });
-
   } catch (error) {
-    console.error("Reply To Review Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error, "Reply To Resort Review Error");
   }
 };
 
-
 /* ==========================================================
-                    REVIEW SUMMARY
-                    For Vendor Dashboard
+   VENDOR: REVIEW SUMMARY
+   GET /summary/:resortId
 ========================================================== */
 
 exports.getReviewSummary = async (req, res) => {
   try {
     const { resortId } = req.params;
 
+    if (!isValidId(resortId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid resortId.",
+      });
+    }
 
-    const filter = {
+    // Verify the resort belongs to the logged-in vendor.
+    const resort = await Resort.findOne({
+      _id: resortId,
       vendor: req.vendor._id,
-      resort: resortId,
-      status: "APPROVED",
-      isActive: true,
-    };
+    })
+      .select("_id name")
+      .lean();
 
+    if (!resort) {
+      return res.status(404).json({
+        success: false,
+        message: "Resort not found or access denied.",
+      });
+    }
 
-    const summary = await ResortReview.aggregate([
+    const summaryResult = await ResortReview.aggregate([
       {
         $match: {
-          vendor: req.vendor._id,
-          resort: new (require("mongoose").Types.ObjectId)(
-            resortId
-          ),
+          vendor: new mongoose.Types.ObjectId(String(req.vendor._id)),
+          resort: new mongoose.Types.ObjectId(resortId),
           status: "APPROVED",
           isActive: true,
         },
       },
-
       {
         $group: {
           _id: null,
-
-          totalReviews: {
-            $sum: 1,
-          },
-
-          averageRating: {
-            $avg: "$rating",
-          },
+          totalReviews: { $sum: 1 },
+          averageRating: { $avg: "$rating" },
 
           fiveStar: {
-            $sum: {
-              $cond: [
-                { $eq: ["$rating", 5] },
-                1,
-                0,
-              ],
-            },
+            $sum: { $cond: [{ $eq: ["$rating", 5] }, 1, 0] },
           },
-
           fourStar: {
-            $sum: {
-              $cond: [
-                { $eq: ["$rating", 4] },
-                1,
-                0,
-              ],
-            },
+            $sum: { $cond: [{ $eq: ["$rating", 4] }, 1, 0] },
           },
-
           threeStar: {
-            $sum: {
-              $cond: [
-                { $eq: ["$rating", 3] },
-                1,
-                0,
-              ],
-            },
+            $sum: { $cond: [{ $eq: ["$rating", 3] }, 1, 0] },
           },
-
           twoStar: {
-            $sum: {
-              $cond: [
-                { $eq: ["$rating", 2] },
-                1,
-                0,
-              ],
-            },
+            $sum: { $cond: [{ $eq: ["$rating", 2] }, 1, 0] },
           },
-
           oneStar: {
-            $sum: {
-              $cond: [
-                { $eq: ["$rating", 1] },
-                1,
-                0,
-              ],
-            },
+            $sum: { $cond: [{ $eq: ["$rating", 1] }, 1, 0] },
           },
         },
       },
     ]);
 
-
-    const result = summary[0] || {
+    const data = summaryResult[0] || {
       totalReviews: 0,
       averageRating: 0,
       fiveStar: 0,
@@ -419,22 +520,22 @@ exports.getReviewSummary = async (req, res) => {
       oneStar: 0,
     };
 
-
-    result.averageRating =
-      Number(result.averageRating.toFixed(1));
-
+    const summary = {
+      totalReviews: data.totalReviews,
+      averageRating: Number((data.averageRating || 0).toFixed(1)),
+      fiveStar: data.fiveStar,
+      fourStar: data.fourStar,
+      threeStar: data.threeStar,
+      twoStar: data.twoStar,
+      oneStar: data.oneStar,
+    };
 
     return res.status(200).json({
       success: true,
-      summary: result,
+      resort,
+      summary,
     });
-
   } catch (error) {
-    console.error("Get Review Summary Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error, "Get Resort Review Summary Error");
   }
 };
