@@ -26,7 +26,7 @@ const allowedOrigins = [
   "https://www.vendor.birdmytrip.com",
   "https://birdmytrip.com",
   "https://www.birdmytrip.com",
-
+"https://connect.birdmytrip.com",
   // Local development
   "http://localhost:3000",
   "http://127.0.0.1:3000",
